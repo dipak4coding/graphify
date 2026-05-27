@@ -173,6 +173,9 @@ def run(
     cfg.scandksw_out.mkdir(parents=True, exist_ok=True)
     cfg.kommentare_out.mkdir(parents=True, exist_ok=True)
 
+    # Flatten all matrix-layer findings (stored in all_defines by scan_files_for_usages)
+    all_findings_matrix = [f for d in all_defines.values() for f in d["findings"]]
+
     result = {
         "nodes": nodes,
         "edges": edges,
@@ -181,7 +184,7 @@ def run(
             "source_root": str(cfg.source_root),
             "signals": len(signals),
             "groups": len(group_files),
-            "findings": len(all_findings),
+            "findings": len(all_findings_matrix),
             "elapsed_sec": round(time.time() - t0, 1),
         },
     }
@@ -194,7 +197,7 @@ def run(
     _write_defines_csv(cfg.scandksw_out / "defines.csv", signals)
 
     # matrix.csv — signal × group matrix (who produces, who reads)
-    _write_matrix_csv(cfg.scandksw_out / "matrix.csv", signals, all_findings, group_files)
+    _write_matrix_csv(cfg.scandksw_out / "matrix.csv", all_defines, all_findings_matrix, group_files)
 
     if not quiet:
         print(f"Output written to: {cfg.scandksw_out}")
