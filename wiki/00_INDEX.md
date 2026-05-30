@@ -51,6 +51,9 @@ The end goal: an AI coding assistant (Claude, Copilot, etc.) can **navigate your
 ### Layer 7 — Automotive Embedded C
 - [[21_c_signal_flow]] — Signal flow graph for automotive C codebases (CAN signals, #ifdef dead-code elimination, forward/backward trace)
 
+### Layer 8 — Reference
+- [[22_usage_guide]] — Complete CLI reference, IDE integrations, confidence levels, setup for local repo
+
 ---
 
 ## Quick Reference — File → Module Map

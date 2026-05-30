@@ -186,6 +186,7 @@
   },
   "active": "9ffb336cd6f2d736",
   "lastOpenFiles": [
+    "wiki/22_usage_guide.md",
     "graphify/__pycache__/cache.cpython-314.pyc",
     "graphify/__pycache__/extract.cpython-314.pyc",
     "wiki/02_pipeline_overview.md",
@@ -217,7 +218,6 @@
     "ScanDKSW/graphify-out/cache/ast/cbefd49c72d3b266176522140f146484f07473ccd6cd7fe73aedd21cfbd92420.json",
     "ScanDKSW/graphify-out/cache/ast/ca22d6fdd2e74006fe4fa634bea5af19e6bea4d0b97e01cede8a5017b22fb140.json",
     "ScanDKSW/graphify-out/cache/ast/c2ac7c9698a04f4f39cff964065cf1fcacd3f0de510e7eacfc6aa93534719de6.json",
-    "ScanDKSW/graphify-out/cache/ast/a8ef38acf5295cd166a1bea8c1e8922cd47c5eb3467bcf598c20e50f9f359a2c.json",
     "ScanDKSW/wiki/4-Usage/Getting-Started.md",
     "ScanDKSW/wiki/4-Usage/Configuration.md",
     "ScanDKSW/wiki/3-Components/Tools.md",
