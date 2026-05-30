@@ -849,6 +849,8 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
         label_to_nid[normalised.lower()] = n["id"]
 
     seen_call_pairs: set[tuple[str, str]] = set()
+    # Calls whose callee wasn't found in this file — resolved later in the global pass
+    unresolved_calls: list[dict] = []
 
     def walk_calls(node, caller_nid: str) -> None:
         if node.type in config.function_boundary_types:
@@ -961,6 +963,15 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
+                elif tgt_nid is None:
+                    # Callee not in this file — queue for global cross-file resolution
+                    line = node.start_point[0] + 1
+                    unresolved_calls.append({
+                        "caller_nid": caller_nid,
+                        "callee_name": callee_name,
+                        "source_file": str_path,
+                        "line": line,
+                    })
 
         for child in node.children:
             walk_calls(child, caller_nid)
@@ -976,7 +987,7 @@ def _extract_generic(path: Path, config: LanguageConfig) -> dict:
         if src in valid_ids and (tgt in valid_ids or edge["relation"] in ("imports", "imports_from")):
             clean_edges.append(edge)
 
-    return {"nodes": nodes, "edges": clean_edges}
+    return {"nodes": nodes, "edges": clean_edges, "unresolved_calls": unresolved_calls}
 
 
 # ── Python rationale extraction ───────────────────────────────────────────────
@@ -2648,6 +2659,41 @@ def extract(paths: list[Path]) -> dict:
     for result in per_file:
         all_nodes.extend(result.get("nodes", []))
         all_edges.extend(result.get("edges", []))
+
+    # ── Global cross-file call resolution ────────────────────────────────────
+    # Per-file label_to_nid only covers nodes in the same file, so calls to
+    # functions defined in other files are left as unresolved_calls.  Here we
+    # build a codebase-wide map and promote those calls to EXTRACTED edges.
+    global_label_to_nid: dict[str, str] = {}
+    for n in all_nodes:
+        normalised = n["label"].strip("()").lstrip(".").lower()
+        if normalised and normalised not in global_label_to_nid:
+            global_label_to_nid[normalised] = n["id"]
+
+    valid_nids: set[str] = {n["id"] for n in all_nodes}
+    seen_cross_pairs: set[tuple[str, str]] = {
+        (e["source"], e["target"])
+        for e in all_edges
+        if e.get("relation") == "calls"
+    }
+
+    for result in per_file:
+        for uc in result.get("unresolved_calls", []):
+            tgt_nid = global_label_to_nid.get(uc["callee_name"].lower())
+            if tgt_nid is None or tgt_nid == uc["caller_nid"] or tgt_nid not in valid_nids:
+                continue
+            pair = (uc["caller_nid"], tgt_nid)
+            if pair not in seen_cross_pairs:
+                seen_cross_pairs.add(pair)
+                all_edges.append({
+                    "source": uc["caller_nid"],
+                    "target": tgt_nid,
+                    "relation": "calls",
+                    "confidence": "EXTRACTED",
+                    "source_file": uc["source_file"],
+                    "source_location": f"L{uc['line']}",
+                    "weight": 1.0,
+                })
 
     # Add cross-file class-level edges (Python only - uses Python parser internally)
     py_paths = [p for p in paths if p.suffix == ".py"]

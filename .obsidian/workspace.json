@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "wiki/02_pipeline_overview.md",
+                "file": "wiki/07_nodes_and_edges_deep_dive.md",
                 "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "02_pipeline_overview"
+              "title": "07_nodes_and_edges_deep_dive"
             }
           }
         ]
@@ -53,7 +53,7 @@
             "state": {
               "type": "search",
               "state": {
-                "query": "tag:#module",
+                "query": "_src",
                 "matchingCase": false,
                 "explainSearch": false,
                 "collapseAll": false,
@@ -74,7 +74,8 @@
               "title": "Bookmarks"
             }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "horizontal",
@@ -185,6 +186,9 @@
   },
   "active": "9ffb336cd6f2d736",
   "lastOpenFiles": [
+    "graphify/__pycache__/cache.cpython-314.pyc",
+    "graphify/__pycache__/extract.cpython-314.pyc",
+    "wiki/02_pipeline_overview.md",
     "wiki_scandksw/19_graphify_integration.md",
     "wiki_scandksw/18_tools.md",
     "wiki_scandksw/17_outputs.md",
@@ -214,13 +218,10 @@
     "ScanDKSW/graphify-out/cache/ast/ca22d6fdd2e74006fe4fa634bea5af19e6bea4d0b97e01cede8a5017b22fb140.json",
     "ScanDKSW/graphify-out/cache/ast/c2ac7c9698a04f4f39cff964065cf1fcacd3f0de510e7eacfc6aa93534719de6.json",
     "ScanDKSW/graphify-out/cache/ast/a8ef38acf5295cd166a1bea8c1e8922cd47c5eb3467bcf598c20e50f9f359a2c.json",
-    "ScanDKSW/graphify-out/cache/ast/8defba38fb54100d2603896d0cd6721708b07652f2e7653d86c377aebeb5e925.json",
     "ScanDKSW/wiki/4-Usage/Getting-Started.md",
     "ScanDKSW/wiki/4-Usage/Configuration.md",
     "ScanDKSW/wiki/3-Components/Tools.md",
     "ScanDKSW/wiki/3-Components/Parser.md",
-    "ScanDKSW/wiki/3-Components/Optimizer.md",
-    "ScanDKSW/wiki/3-Components/Lexer.md",
     "ScanDKSW/VASAMM/Unicode_UTF-8-Zeichentabelle-Dateien/vk.png",
     "ScanDKSW/VASAMM/Unicode_UTF-8-Zeichentabelle-Dateien/twitter.png",
     "ScanDKSW/VASAMM/Unicode_UTF-8-Zeichentabelle-Dateien/stumbleupon.png",
