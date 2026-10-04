@@ -6648,6 +6648,27 @@ def extract(
             f"may be partially extracted: {_shown}{_more}",
             file=sys.stderr, flush=True,
         )
+        # The line above names only the first 5. Write ALL of them (with extension
+        # counts) so a user can see which files, e.g. headers, the grammar rejects.
+        try:
+            from graphify.paths import out_path as _out_path
+            _o = _out_path()
+            _o = _o if _o.is_absolute() else Path(root) / _o
+            _o.mkdir(parents=True, exist_ok=True)
+            _by_ext: dict[str, int] = {}
+            for _f in _syntax_error_files:
+                _ext = os.path.splitext(_f[0])[1].lower() or "(none)"
+                _by_ext[_ext] = _by_ext.get(_ext, 0) + 1
+            (_o / "syntax_errors.txt").write_text(
+                "# files tree-sitter reported syntax errors for\n"
+                "# by extension: " + ", ".join(f"{k}={v}" for k, v in sorted(_by_ext.items())) + "\n"
+                + "\n".join(_describe_syntax_error(*f) for f in _syntax_error_files) + "\n",
+                encoding="utf-8",
+            )
+            print(f"  syntax-error list ({', '.join(f'{k}: {v}' for k, v in sorted(_by_ext.items()))}): "
+                  f"{_o / 'syntax_errors.txt'}", file=sys.stderr, flush=True)
+        except Exception:
+            pass
 
     all_nodes: list[dict] = []
     all_edges: list[dict] = []

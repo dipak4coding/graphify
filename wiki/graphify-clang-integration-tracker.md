@@ -111,3 +111,11 @@ Run `graphify clang-check <project root>` first. Minimal `graphify-clang.json` i
 The trace and report show: config source, extractor, per-file compile-flag source (`compile_commands` / `extra_args` / default), every clang error with file:line:col, pointer registrations found, member accesses ignored because the pointer is not registered, per-file node/edge counts, tree-sitter nodes removed (clang mode), A2L parse counts, unmatched code fields and unmatched A2L characteristics.
 
 Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef names) stay from tree-sitter; a header only partly visible to clang loses tree-sitter symbols that clang never referenced.
+
+## 9. First real run, 38,761 files (2026-10-04)
+
+| Observation | Meaning / action |
+|---|---|
+| `clang pass OFF` | no `graphify-clang.json` found; user's compile DB is named `compile_commands_full.json` (set `"compile_commands"` accordingly) |
+| 214 files with syntax errors | tree-sitter has no preprocessor; macro-heavy / compiler-specific C (headers especially) trips it. Message only named 5 files, so `graphify-out/syntax_errors.txt` now lists all, with counts per extension |
+| Headers are extracted by tree-sitter | yes (`.h` is scanned as C). Clang reads headers through the `.c` files that include them, with the real preprocessor |
