@@ -12,10 +12,10 @@ Legend: DONE / PARTIAL / TODO / DECIDED.
 | T3 | Test env + fixtures | DONE | `tests/fixtures/clang_toy/` (kku.c/.h, kku_out.c, toy.a2l); libclang via `pip install libclang` |
 | T4 | Clang module | DONE (prototype) | `graphify/extractors/clang_c.py` |
 | T5 | A2L scan + join | DONE (prototype) | `graphify/extractors/a2l.py` |
-| T6 | Hook in `extract()` + config | PARTIAL | hook + `graphify-clang.json` done; CLI flags `--clang --compile-commands --a2l` TODO |
+| T6 | Hook in `extract()` + config | DONE | hook, `graphify-clang.json`, and CLI flags `--clang --compile-commands --a2l --libclang` on `extract`/`update` (flags override the file; not remembered between runs) |
 | T7 | `update` integration | DONE (toy) | second `graphify update` keeps all clang/A2L items |
-| T8 | Registry wiring (`serve`, `affected`) | PARTIAL | see section 3 |
-| T9 | Tests | DONE | `tests/test_clang_integration.py` (9 pass); full suite: same 1233 failures before and after (pre-existing, environment) |
+| T8 | Registry wiring (`serve`, `affected`, `explain`) | DONE | findings 4, 7, 8, 11 |
+| T9 | Tests | DONE | `tests/test_clang_integration.py` (12 pass); full suite: same 1233 failures before and after (pre-existing, environment) |
 | T10 | Docs, Copilot instructions, push | TODO | |
 
 ## 2. The 12 findings (from `graphify-enrichment-compat.md`)
@@ -28,11 +28,11 @@ Legend: DONE / PARTIAL / TODO / DECIDED.
 | 4 | `affected` ignores relations | DONE | `affected.py` defaults extended from registry (verified) |
 | 5 | `update` wipes items | DONE | items are stamped `_origin="ast"` by `extract()`; rebuilt per file |
 | 6 | A2L text not searchable | DONE | A2L description copied to `rationale` (verified: "oil temperature threshold") |
-| 7 | metadata not printed | PARTIAL | NODE line shows `kind= range= mask=`; `explain`/`get_node` metadata + relation-priority sort TODO |
+| 7 | metadata not printed | DONE | NODE line `kind= range= mask=`; `explain` and `get_node` print kind, A2L link, range, params; `explain` sorts writes > reads > calibration > axis > a2l before degree |
 | 8 | question words | DONE | hints, intent terms, aliases from registry ("who writes X" infers context=write) |
 | 9 | writer -> reader path | TODO | needs derived `feeds` edge or new command |
 | 10 | absolute paths | DONE | ids and `source_file` root-relative |
-| 11 | noise seeds (file node) | TODO | skip File nodes in `_pick_seeds` |
+| 11 | noise seeds (file node) | DONE | `_pick_seeds` drops file nodes when a real symbol also matched (walking `defined_in`/`includes` is moot: clang pass does not emit them) |
 | 12 | hubs not expanded | DOCUMENTED | use `explain`/`get_neighbors`; add to Copilot instructions |
 
 ## 3. Design decisions
@@ -72,7 +72,6 @@ Legend: DONE / PARTIAL / TODO / DECIDED.
 
 ## 6. Open items
 
-- CLI flags `--clang`, `--compile-commands`, `--a2l` (T6)
-- `explain` / `get_node` metadata + priority sort (finding 7)
-- Skip File nodes as seeds (finding 11)
+- Finding 9: writer -> reader path (`feeds` edge or direction-aware command)
+- Run on a real-size project (first real `compile_commands.json`)
 - `.github/copilot-instructions.md` text, push, optional PR to `current-v8` only if asked (T10)

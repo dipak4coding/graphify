@@ -1061,7 +1061,42 @@ def _reenter_main() -> None:
     main()
 
 
+def _consume_clang_flags() -> None:
+    """Strip --clang / --compile-commands X / --a2l X / --libclang X from sys.argv and
+    hand them to the optional clang pass (see graphify/extractors/clang_c.py)."""
+    value_flags = {"--compile-commands": "compile_commands", "--a2l": "a2l", "--libclang": "libclang"}
+    opts: dict = {}
+    rest = [sys.argv[0]]
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        a = args[i]
+        name, eq, inline = a.partition("=")
+        if a == "--clang":
+            opts["enabled"] = True
+        elif name in value_flags:
+            if eq:
+                val = inline
+            elif i + 1 < len(args):
+                i += 1
+                val = args[i]
+            else:
+                print(f"error: {name} needs a value", file=sys.stderr)
+                sys.exit(2)
+            opts[value_flags[name]] = str(Path(val).resolve())
+            opts["enabled"] = True
+        else:
+            rest.append(a)
+        i += 1
+    if opts:
+        sys.argv[:] = rest
+        from graphify.extractors.clang_c import set_runtime_config
+        set_runtime_config(**opts)
+
+
 def dispatch_command(cmd: str) -> None:
+    if cmd in ("extract", "update"):
+        _consume_clang_flags()
     if cmd == "provider":
         from graphify.llm import _custom_providers_path, BACKENDS
         import json as _json
@@ -1763,6 +1798,9 @@ def dispatch_command(cmd: str) -> None:
             f"  Source:    {d.get('source_file', '')} {d.get('source_location', '')}".rstrip()
         )
         print(f"  Type:      {d.get('file_type', '')}")
+        from graphify.relations import metadata_lines, relation_priority
+        for _ml in metadata_lines(d):
+            print(_ml)
         print(f"  Community: {d.get('community_name') or d.get('community', '')}")
         # Work-memory overlay: a derived experiential hint from `graphify reflect`,
         # merged in display-only from the .graphify_learning.json sidecar next to
@@ -1807,7 +1845,7 @@ def dispatch_command(cmd: str) -> None:
             )
         if connections:
             print(f"\nConnections ({len(connections)}):")
-            connections.sort(key=lambda c: G.degree(c[1]), reverse=True)
+            connections.sort(key=lambda c: (relation_priority(c[2].get('relation', '')), -G.degree(c[1])))
             for direction, nb, edata in connections[:20]:
                 rel = edata.get("relation", "")
                 conf = edata.get("confidence", "")

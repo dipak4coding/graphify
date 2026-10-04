@@ -105,3 +105,34 @@ def test_registry_feeds_affected_defaults():
     for rel in affected_relations():
         assert rel in DEFAULT_AFFECTED_RELATIONS
     assert context_for("reads_writes_var") == "readwrite"
+
+
+def test_cli_flags_enable_pass_without_config(toy, monkeypatch):
+    import sys
+    from graphify import cli
+    from graphify.extractors import clang_c
+    (toy / "graphify-clang.json").unlink()
+    monkeypatch.setattr(sys, "argv", ["graphify", "update", ".", "--clang", "--a2l", str(toy / "toy.a2l")])
+    monkeypatch.setattr(clang_c, "_runtime_override", None)
+    cli._consume_clang_flags()
+    assert sys.argv == ["graphify", "update", "."]
+    nodes, edges = _run(toy)
+    assert any(e["relation"] == "reads_calibration_field" for e in edges)
+    monkeypatch.setattr(clang_c, "_runtime_override", None)
+
+
+def test_metadata_lines_and_priority():
+    from graphify.relations import metadata_lines, relation_priority
+    lines = metadata_lines({"type": "calibration_field", "metadata": {"a2l_range": "0..1", "bit_mask": 2}})
+    assert any("calibration_field" in line for line in lines)
+    assert any("0..1" in line for line in lines)
+    assert relation_priority("writes_var") < relation_priority("reads_var") < relation_priority("calls")
+
+
+def test_pick_seeds_skips_file_nodes():
+    import networkx as nx
+    from graphify.serve import _pick_seeds
+    G = nx.DiGraph()
+    G.add_node("f", label="kku.c", source_file="kku.c")
+    G.add_node("v", label="Kku_Anf", source_file="kku.h")
+    assert _pick_seeds([(5.0, "f"), (4.9, "v")], G=G) == ["v"]

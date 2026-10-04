@@ -749,6 +749,19 @@ def _pick_seeds(
     if not scored:
         return []
 
+    # A file node (label == its own file name) matches any query that shares the
+    # file's prefix and only drags its whole contains-fan-out in. Never seed from
+    # one when a real symbol also matched.
+    if G is not None:
+        def _is_file_node(nid: str) -> bool:
+            d = G.nodes.get(nid, {})
+            sf = str(d.get("source_file") or "")
+            return bool(sf) and str(d.get("label", "")) == sf.replace("\\", "/").rsplit("/", 1)[-1]
+        if any(not _is_file_node(n) for _, n in scored):
+            scored = [(sc, n) for sc, n in scored if not _is_file_node(n)]
+            if best_seed_by_term:
+                best_seed_by_term = {t: n for t, n in best_seed_by_term.items() if not _is_file_node(n)}
+
     # Deduplicate seeds by (normalized) label so a generic, homonymous symbol —
     # e.g. dozens of route handlers all labelled `GET`/`POST`, or a `handler`
     # repeated across a framework — contributes at most one seed instead of
@@ -827,6 +840,8 @@ from graphify.relations import (  # noqa: E402
     context_hints as _enrichment_context_hints,
     intent_terms as _enrichment_intent_terms,
 )
+
+from graphify.relations import metadata_lines as _metadata_lines  # noqa: E402
 
 _RELATIONAL_INTENT_TERMS = _RELATIONAL_INTENT_TERMS | _enrichment_intent_terms()
 
@@ -2027,6 +2042,7 @@ def _build_server(graph_path: str):
                f"{sanitize_label(str(d.get('definition_location', '')))}"]
               if d.get("definition_file") else []),
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
+            *[sanitize_label(_ml) for _ml in _metadata_lines(d)],
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",
         ])

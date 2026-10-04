@@ -91,3 +91,38 @@ def intent_terms() -> frozenset:
             words.update(r.hints)
     words.update({"set", "sets", "modified", "modifies", "modify"})
     return frozenset(words)
+
+
+# ---- presentation helpers (explain / get_node) ------------------------------
+
+_PRIORITY = {"write": 0, "readwrite": 0, "read": 1, "calibration": 2, "axis": 3, "a2l": 4}
+
+
+def relation_priority(relation: str) -> int:
+    """Sort key for `explain`: writes, reads, calibration, axis, a2l first; everything else after."""
+    return _PRIORITY.get(context_for(relation) or "", 9)
+
+
+_META_KEYS = (
+    ("calibration_path", "Calibration path"), ("calibration_ref", "Calibration ref"),
+    ("a2l_characteristic_name", "A2L characteristic"), ("a2l_axis_pts_name", "A2L axis"),
+    ("a2l_range", "Range"), ("bit_mask", "Bit mask"), ("accessed_via", "Accessed via"),
+    ("return_type", "Returns"),
+)
+
+
+def metadata_lines(node: dict, indent: str = "  ") -> list:
+    """Printable enrichment facts for a node: kind, A2L link, range, parameters, ..."""
+    out = []
+    if node.get("type"):
+        out.append(f"{indent}Kind:      {node['type']}")
+    meta = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+    for key, label in _META_KEYS:
+        if meta.get(key) not in (None, ""):
+            out.append(f"{indent}{label + ':':<10} {meta[key]}")
+    params = meta.get("parameters")
+    if isinstance(params, list) and params:
+        shown = ", ".join(f"{p.get('type', '')} {p.get('name', '')} ({p.get('role', '')})".strip()
+                          for p in params[:8] if isinstance(p, dict))
+        out.append(f"{indent}Params:    {shown}")
+    return out

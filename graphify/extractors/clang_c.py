@@ -88,10 +88,6 @@ def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
 
 def load_config(root: Path | None) -> ClangConfig | None:
     """Config discovery: CLI override > $GRAPHIFY_CLANG_CONFIG > <root>/graphify-clang.json > ./graphify-clang.json."""
-    if _runtime_override:
-        cfg = _config_from_dict(_runtime_override, Path.cwd())
-        cfg.enabled = bool(_runtime_override.get("enabled", True))
-        return cfg
     candidates = []
     env = os.environ.get(ENV_CONFIG)
     if env:
@@ -107,8 +103,18 @@ def load_config(root: Path | None) -> ClangConfig | None:
                 print(f"[graphify] clang config {cand} unreadable: {exc}", file=sys.stderr)
                 return None
             cfg = _config_from_dict(data, cand.resolve().parent)
-            return cfg if cfg.enabled else None
-    return None
+            return _apply_override(cfg) if (cfg.enabled or _runtime_override) else None
+    return _apply_override(ClangConfig(base_dir=str(Path.cwd()))) if _runtime_override else None
+
+
+def _apply_override(cfg: ClangConfig) -> ClangConfig:
+    """CLI flags win over the config file; absolute paths from the CLI need no base_dir."""
+    if _runtime_override:
+        for key in ("compile_commands", "libclang", "a2l"):
+            if key in _runtime_override:
+                setattr(cfg, key, _runtime_override[key])
+        cfg.enabled = bool(_runtime_override.get("enabled", True))
+    return cfg
 
 
 _warned: set = set()
