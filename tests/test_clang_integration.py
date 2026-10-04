@@ -136,3 +136,57 @@ def test_pick_seeds_skips_file_nodes():
     G.add_node("f", label="kku.c", source_file="kku.c")
     G.add_node("v", label="Kku_Anf", source_file="kku.h")
     assert _pick_seeds([(5.0, "f"), (4.9, "v")], G=G) == ["v"]
+
+
+def _extract_with(toy, extractor, debug=False):
+    from graphify.extractors import clang_c
+    clang_c.set_runtime_config(extractor=extractor, **({"debug": True} if debug else {}))
+    try:
+        return _run(toy)
+    finally:
+        clang_c.set_runtime_config()
+
+
+def test_extractor_treesitter_skips_clang(toy):
+    nodes, edges = _extract_with(toy, "treesitter")
+    assert not any(e["relation"] in ("reads_var", "reads_calibration_field") for e in edges)
+
+
+def test_extractor_clang_replaces_treesitter_symbols(toy):
+    nodes, edges = _extract_with(toy, "clang")
+    fn = _by_label(nodes, "Kku_BerKuehlAnf()")
+    assert fn["metadata"]["source_extractor"] == "clang"  # not enriched tree-sitter, replaced
+    assert any(n["label"] == "kku.c" for n in nodes), "file nodes are kept"
+    assert _edge(nodes, edges, "Kku_BerKuehlAnf()", "reads_writes_var", "Kku_Anf")
+    assert not any(e["relation"] == "references" for e in edges), "tree-sitter reference edges dropped"
+
+
+def test_extractor_clang_keeps_treesitter_for_unparsable_file(toy):
+    (toy / "broken.c").write_text("int Broken_Fn(void) { return missing_symbol(; }\n", encoding="utf-8")
+    nodes, edges = _extract_with(toy, "clang")
+    assert any(n["label"].startswith("Broken_Fn") for n in nodes)
+
+
+def test_debug_writes_log_and_report(toy):
+    _extract_with(toy, "both", debug=True)
+    log = toy / "graphify-out" / "clang_debug.log"
+    report = toy / "graphify-out" / "clang_report.json"
+    assert log.is_file() and report.is_file()
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["extractor"] == "both"
+    assert data["calibration_pointers"] == {"KkuAppPtr": "KkuAppROM"}
+    assert data["per_file"]["kku.c"]["args_source"].startswith("extra_args")
+    assert "unmatched_code" in data["a2l_stats"]
+    assert "registrations in kku.c" in log.read_text(encoding="utf-8")
+
+
+def test_extractor_flag_parsing(monkeypatch):
+    import sys
+    from graphify import cli
+    from graphify.extractors import clang_c
+    monkeypatch.setattr(sys, "argv", ["graphify", "update", ".", "--extractor", "clang", "--clang-debug"])
+    monkeypatch.setattr(clang_c, "_runtime_override", None)
+    cli._consume_clang_flags()
+    assert sys.argv == ["graphify", "update", "."]
+    assert clang_c._runtime_override["extractor"] == "clang" and clang_c._runtime_override["debug"] is True
+    monkeypatch.setattr(clang_c, "_runtime_override", None)

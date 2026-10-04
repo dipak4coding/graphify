@@ -580,6 +580,8 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
     by_id = {n["id"]: n for n in nodes if n.get("id")}
     seen_edges = {(e.get("source"), e.get("target"), e.get("relation")) for e in edges}
     stats = {"measurements": 0, "characteristics": 0, "axis_pts": 0, "fallback": 0}
+    matched_chars: set = set()
+    unmatched_code: list = []
 
     def _edge(src, tgt, relation):
         key = (src, tgt, relation)
@@ -629,6 +631,7 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
         ckey, cfb = resolve_a2l_key(join_key, sym_to_char)
         if ckey is not None:
             cname, cobj = sym_to_char[ckey]
+            matched_chars.add(ckey)
             meta["a2l_characteristic_name"] = cname
             if cfb:
                 meta["a2l_implicit_index_fallback"] = True
@@ -671,6 +674,13 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
             _edge(node["id"], axis_id, "mapped_to_a2l_axis_pts")
             stats["axis_pts"] += 1
 
+    for node in nodes:
+        m = node.get("metadata") or {}
+        if node.get("type") == "calibration_field" and not (
+                m.get("a2l_characteristic_name") or m.get("a2l_axis_pts_name") or m.get("calibration_ref")):
+            unmatched_code.append(m.get("calibration_path") or node.get("label"))
+    stats["unmatched_code"] = unmatched_code[:200]
+    stats["unmatched_a2l"] = [name for key, (name, _o) in sym_to_char.items() if key not in matched_chars][:200]
     stats["totals"] = {
         "measurements": len(measurements), "characteristics": len(characteristics), "axis_pts": len(axis_pts),
     }

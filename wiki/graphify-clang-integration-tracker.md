@@ -94,3 +94,20 @@ Run `graphify clang-check <project root>` first. Minimal `graphify-clang.json` i
   "libclang": "optional path to libclang.dll / .so"
 }
 ```
+
+## 8. Extractor choice and debugging (added 2026-10-04)
+
+| Option | How | Effect |
+|---|---|---|
+| `tree-sitter` | `--extractor tree-sitter` / `"extractor": "treesitter"` / `GRAPHIFY_EXTRACTOR=tree-sitter` | clang pass skipped; original Graphify behaviour |
+| `both` (default) | `--extractor both` / `--clang` / config present | tree-sitter first, clang enriches and adds |
+| `clang` | `--extractor clang` / `"extractor": "clang"` | tree-sitter symbol nodes (and their edges) of every C file clang parsed are replaced by clang's. File nodes and file-to-file `imports` stay. A C file clang cannot parse keeps its tree-sitter symbols and is listed in a warning. Non-C languages stay tree-sitter. |
+
+| Debug | How | Output |
+|---|---|---|
+| Verbose trace | `--clang-debug` / `"debug": true` / `GRAPHIFY_CLANG_DEBUG=1` | stderr + `graphify-out/clang_debug.log` |
+| Report | same switch | `graphify-out/clang_report.json` |
+
+The trace and report show: config source, extractor, per-file compile-flag source (`compile_commands` / `extra_args` / default), every clang error with file:line:col, pointer registrations found, member accesses ignored because the pointer is not registered, per-file node/edge counts, tree-sitter nodes removed (clang mode), A2L parse counts, unmatched code fields and unmatched A2L characteristics.
+
+Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef names) stay from tree-sitter; a header only partly visible to clang loses tree-sitter symbols that clang never referenced.

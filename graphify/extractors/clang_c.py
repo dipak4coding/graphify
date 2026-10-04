@@ -27,6 +27,7 @@ or a config the pass is skipped and extraction is unchanged.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import sys
@@ -37,7 +38,23 @@ from graphify.extractors.base import _file_stem
 from graphify.ids import make_id
 from graphify.relations import context_for
 
+LOG = logging.getLogger("graphify.clang")
 CONFIG_NAME = "graphify-clang.json"
+ENV_DEBUG = "GRAPHIFY_CLANG_DEBUG"
+ENV_EXTRACTOR = "GRAPHIFY_EXTRACTOR"
+EXTRACTORS = ("treesitter", "clang", "both")
+_EXTRACTOR_ALIASES = {
+    "tree-sitter": "treesitter", "treesitter": "treesitter", "ts": "treesitter",
+    "clang": "clang", "clang_only": "clang", "clang-only": "clang",
+    "both": "both", "hybrid": "both",
+}
+
+
+def normalize_extractor(value) -> str:
+    key = str(value).strip().lower()
+    if key not in _EXTRACTOR_ALIASES:
+        raise ValueError(f"unknown extractor {value!r}; use tree-sitter, clang or both")
+    return _EXTRACTOR_ALIASES[key]
 ENV_CONFIG = "GRAPHIFY_CLANG_CONFIG"
 ENV_LIBCLANG = "GRAPHIFY_LIBCLANG"
 
@@ -58,6 +75,9 @@ class ClangConfig:
         default_factory=lambda: ["Bios_RegisterCalibrationData", "RegisterCalibrationData"]
     )
     base_dir: str = "."  # directory the relative paths above resolve against
+    extractor: str = "both"  # treesitter | clang | both  (clang = replace tree-sitter's C output)
+    debug: bool = False  # verbose log to stderr + graphify-out/clang_debug.log + clang_report.json
+    source: str = "defaults"  # where the config came from (for the debug log)
 
     def resolve(self, value: str | None) -> Path | None:
         if not value:
@@ -77,17 +97,43 @@ def set_runtime_config(**kwargs) -> None:
 
 def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
     cfg = ClangConfig(base_dir=str(base_dir))
-    for key in ("enabled", "compile_commands", "libclang", "a2l"):
+    for key in ("enabled", "compile_commands", "libclang", "a2l", "debug"):
         if key in data:
             setattr(cfg, key, data[key])
+    if "extractor" in data:
+        cfg.extractor = normalize_extractor(data["extractor"])
     for key in ("scope", "extra_args", "register_functions"):
         if key in data and data[key]:
             setattr(cfg, key, list(data[key]))
     return cfg
 
 
+def _override() -> dict:
+    """CLI flags (set_runtime_config) merged with environment variables."""
+    ov = dict(_runtime_override or {})
+    env_ex = os.environ.get(ENV_EXTRACTOR)
+    if env_ex and "extractor" not in ov:
+        ov["extractor"] = normalize_extractor(env_ex)
+        if ov["extractor"] != "treesitter":
+            ov.setdefault("enabled", True)
+    if os.environ.get(ENV_DEBUG, "").lower() in ("1", "true", "yes"):
+        ov.setdefault("debug", True)
+    return ov
+
+
+def _apply_override(cfg: ClangConfig, ov: dict) -> ClangConfig:
+    """CLI/env wins over the config file; absolute paths from the CLI need no base_dir."""
+    for key in ("compile_commands", "libclang", "a2l", "extractor", "debug"):
+        if key in ov:
+            setattr(cfg, key, ov[key])
+    if "enabled" in ov:
+        cfg.enabled = bool(ov["enabled"])
+    return cfg
+
+
 def load_config(root: Path | None) -> ClangConfig | None:
-    """Config discovery: CLI override > $GRAPHIFY_CLANG_CONFIG > <root>/graphify-clang.json > ./graphify-clang.json."""
+    """Config discovery: CLI/env > $GRAPHIFY_CLANG_CONFIG > <root>/graphify-clang.json > ./graphify-clang.json."""
+    ov = _override()
     candidates = []
     env = os.environ.get(ENV_CONFIG)
     if env:
@@ -103,18 +149,45 @@ def load_config(root: Path | None) -> ClangConfig | None:
                 print(f"[graphify] clang config {cand} unreadable: {exc}", file=sys.stderr)
                 return None
             cfg = _config_from_dict(data, cand.resolve().parent)
-            return _apply_override(cfg) if (cfg.enabled or _runtime_override) else None
-    return _apply_override(ClangConfig(base_dir=str(Path.cwd()))) if _runtime_override else None
+            cfg.source = str(cand)
+            cfg = _apply_override(cfg, ov)
+            return cfg if cfg.enabled else None
+    if ov:
+        cfg = _apply_override(ClangConfig(base_dir=str(Path.cwd()), source="command line / environment only"), ov)
+        return cfg if (cfg.enabled or cfg.extractor == "treesitter") else None
+    return None
 
 
-def _apply_override(cfg: ClangConfig) -> ClangConfig:
-    """CLI flags win over the config file; absolute paths from the CLI need no base_dir."""
-    if _runtime_override:
-        for key in ("compile_commands", "libclang", "a2l"):
-            if key in _runtime_override:
-                setattr(cfg, key, _runtime_override[key])
-        cfg.enabled = bool(_runtime_override.get("enabled", True))
-    return cfg
+def _setup_logging(cfg: ClangConfig, root: Path) -> Path | None:
+    """Debug mode: full trace to stderr AND graphify-out/clang_debug.log. Returns the log path."""
+    for h in list(LOG.handlers):
+        LOG.removeHandler(h)
+        try:
+            h.close()
+        except Exception:
+            pass
+    LOG.propagate = False
+    if not cfg.debug:
+        LOG.setLevel(logging.WARNING)
+        return None
+    LOG.setLevel(logging.DEBUG)
+    fmt = logging.Formatter("[graphify clang] %(levelname)s %(message)s")
+    sh = logging.StreamHandler(sys.stderr)
+    sh.setFormatter(fmt)
+    LOG.addHandler(sh)
+    log_path = None
+    try:
+        from graphify.paths import out_path
+        out = out_path()
+        out = out if out.is_absolute() else root / out
+        out.mkdir(parents=True, exist_ok=True)
+        log_path = out / "clang_debug.log"
+        fh = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        LOG.addHandler(fh)
+    except Exception as exc:  # logging must never break extraction
+        LOG.warning("could not open debug log file: %s", exc)
+    return log_path
 
 
 _warned: set = set()
@@ -208,6 +281,11 @@ class ClangExtractor:
         self.ptr_maps: dict = {}  # rel file -> {ptr: rom} (for the incremental cache)
         self.parse_errors = 0
         self.files_parsed = 0
+        self.file_info: dict = {}  # rel file -> diagnostics / args source / counts (debug report)
+        self.rejected_ptrs: dict = {}  # pointer name -> accesses ignored because not registered
+        self.failed_files: list = []
+        self.parsed_files: list = []
+        self._args_src = "?"
         self._pass_pt = {self.K.UNEXPOSED_EXPR, self.K.PAREN_EXPR, self.K.CSTYLE_CAST_EXPR,
                          self.K.UNARY_OPERATOR, self.K.CXX_UNARY_EXPR}
         self._array_kinds = {self.T.CONSTANTARRAY, self.T.INCOMPLETEARRAY, self.T.VARIABLEARRAY,
@@ -446,6 +524,7 @@ class ClangExtractor:
         canonical = ref.canonical if ref.canonical is not None else ref
         base_name = canonical.spelling
         if base_name not in self.ptr_to_rom:
+            self.rejected_ptrs[base_name] = self.rejected_ptrs.get(base_name, 0) + 1
             return False  # ordinary struct: only a REGISTERED calibration pointer proves calibration
         line = cursor.location.line
         base_id = self._global_var(ref, sfile)
@@ -675,11 +754,16 @@ class ClangExtractor:
                 if args and os.path.normcase(os.path.normpath(os.path.abspath(args[-1]))) == \
                         os.path.normcase(os.path.normpath(os.path.abspath(path))):
                     args = args[:-1]
+                self._args_src = "compile_commands"
                 return [a for a in args if a != "-c"]
             _warn_once(f"cc:{path}", f"{path.name} not in compile_commands.json; using extra_args")
+            self._args_src = "extra_args (NOT in compile_commands.json)"
+        else:
+            self._args_src = "extra_args"
         args = list(self.cfg.extra_args)
         if not args:
             args = [f"-I{path.parent}"]
+            self._args_src = "default -I<file dir> (no compile flags: includes may be missing)"
         return args
 
     def _scan_registrations(self, tu_cursor) -> dict:
@@ -721,16 +805,39 @@ class ClangExtractor:
         if not path.is_file():
             return None
         index = self.ci.Index.create()
+        rel = self.sf(str(path))
+        args = self._args_for(path)
+        info = {"args_source": self._args_src, "args": args, "errors": 0, "warnings": 0, "error_samples": []}
+        self.file_info[rel] = info
+        LOG.debug("parse %s | args from %s | %d arg(s)", rel, self._args_src, len(args))
+        LOG.debug("  args: %s", " ".join(args))
         try:
-            tu = index.parse(str(path), args=self._args_for(path))
+            tu = index.parse(str(path), args=args)
         except self.ci.TranslationUnitLoadError as exc:
             _warn_once(f"tu:{path}", f"clang could not load {path.name}: {exc}")
+            LOG.error("FAILED to load %s: %s", rel, exc)
+            info["load_error"] = str(exc)
+            self.failed_files.append(rel)
             return None
-        errors = [d for d in tu.diagnostics if d.severity >= self.ci.Diagnostic.Error]
+        sev = self.ci.Diagnostic
+        for d in tu.diagnostics:
+            loc = d.location
+            where = f"{self.sf(str(loc.file))}:{loc.line}:{loc.column}" if loc.file else "?"
+            if d.severity >= sev.Error:
+                info["errors"] += 1
+                if len(info["error_samples"]) < 10:
+                    info["error_samples"].append(f"{where}: {d.spelling}")
+                LOG.warning("clang error %s: %s", where, d.spelling)
+            elif d.severity == sev.Warning:
+                info["warnings"] += 1
+                LOG.debug("clang warning %s: %s", where, d.spelling)
+        errors = info["errors"]
         if errors:
-            self.parse_errors += len(errors)
-            _warn_once(f"diag:{path}", f"{path.name}: {len(errors)} clang error(s) "
-                                       f"(first: {errors[0].spelling}); results may be partial")
+            self.parse_errors += errors
+            _warn_once(f"diag:{path}", f"{path.name}: {errors} clang error(s) "
+                                       f"(first: {info['error_samples'][0]}); results may be partial. "
+                                       f"Re-run with --clang-debug for all of them.")
+        self.parsed_files.append(rel)
         return tu
 
     def run(self, c_files: list, cached_ptr_maps: dict) -> None:
@@ -744,6 +851,7 @@ class ClangExtractor:
         for path, tu in tus:
             rel = self.sf(str(path))
             self.ptr_maps[rel] = self._scan_registrations(tu.cursor)
+            LOG.debug("registrations in %s: %s", rel, self.ptr_maps[rel] or "none")
         merged = {}
         for rel, mapping in cached_ptr_maps.items():
             if rel not in self.ptr_maps:
@@ -751,14 +859,23 @@ class ClangExtractor:
         for mapping in self.ptr_maps.values():
             merged.update(mapping)
         self.ptr_to_rom = merged
+        LOG.info("calibration pointer registrations (ptr -> ROM): %s", merged or "NONE FOUND - no calibration edges can be produced")
         # pass 2: structure walk
         for path, tu in tus:
             self._pending_contains = []
             sfile = str(path)
+            n0, e0 = len(self.nodes), len(self.edges)
             for child in tu.cursor.get_children():
                 if self._skip(child):
                     continue
                 self.walk(child, None, sfile)
+            rel = self.sf(sfile)
+            self.file_info[rel]["nodes_added"] = len(self.nodes) - n0
+            self.file_info[rel]["edges_added"] = len(self.edges) - e0
+            LOG.info("walked %s: +%d nodes, +%d edges (before dedup)", rel,
+                     len(self.nodes) - n0, len(self.edges) - e0)
+        if self.rejected_ptrs:
+            LOG.debug("member accesses ignored (pointer NOT registered as calibration): %s", self.rejected_ptrs)
 
     # ---- finalize -----------------------------------------------------------------------
 
@@ -826,9 +943,99 @@ def _cache_file(root: Path) -> Path:
     return base / "clang_ptr_rom.json"
 
 
+def _is_file_node(n: dict) -> bool:
+    sf = str(n.get("source_file") or "").replace("\\", "/")
+    return bool(sf) and str(n.get("label", "")) == sf.rsplit("/", 1)[-1]
+
+
+def _replace_treesitter(all_nodes, all_edges, nodes, edges, covered: set, root: Path) -> dict:
+    """extractor=clang: drop tree-sitter's symbol nodes (and every edge touching them) for the
+    files clang parsed, then add clang's. File nodes and file->file edges (imports) stay: they are
+    the structure clang does not provide. Files clang could NOT parse are not in ``covered`` and
+    keep their tree-sitter symbols (per-file fallback)."""
+    from graphify.extract import _file_node_id
+
+    def _rel(sf: str) -> str:  # tree-sitter source_file may still be absolute at this point
+        try:
+            return Path(sf).resolve().relative_to(root).as_posix() if Path(sf).is_absolute() else sf.replace("\\", "/")
+        except (ValueError, OSError):
+            return sf
+
+    removed_ids = {n["id"] for n in all_nodes
+                   if n.get("source_file") and _rel(str(n["source_file"])) in covered and not _is_file_node(n)
+                   and n.get("file_type") == "code"}
+    kept_nodes = [n for n in all_nodes if n.get("id") not in removed_ids]
+    kept_edges = [e for e in all_edges
+                  if e.get("source") not in removed_ids and e.get("target") not in removed_ids]
+    dropped_edges = len(all_edges) - len(kept_edges)
+    all_nodes[:] = kept_nodes
+    all_edges[:] = kept_edges
+
+    existing = {n["id"] for n in all_nodes}
+    for node in nodes:
+        if node["id"] in existing:
+            continue
+        node["metadata"]["source_extractor"] = "clang"
+        all_nodes.append(node)
+        existing.add(node["id"])
+    seen = {(e.get("source"), e.get("target"), e.get("relation")) for e in all_edges}
+    e_added = 0
+    for edge in edges:
+        key = (edge["source"], edge["target"], edge["relation"])
+        if key in seen or edge["source"] not in existing or edge["target"] not in existing:
+            continue
+        seen.add(key)
+        all_edges.append(edge)
+        e_added += 1
+    for node in nodes:  # file --contains--> function/variable (tree-sitter's contains edges were dropped)
+        if node["type"] not in ("function", "variable") or not node.get("source_file"):
+            continue
+        sf = Path(node["source_file"])
+        file_id = _file_node_id(sf) if not sf.is_absolute() else None
+        if file_id and file_id in existing and file_id != node["id"]:
+            key = (file_id, node["id"], "contains")
+            if key not in seen:
+                seen.add(key)
+                all_edges.append({"source": file_id, "target": node["id"], "relation": "contains",
+                                  "confidence": "EXTRACTED", "source_file": node["source_file"], "weight": 1.0,
+                                  **({"source_location": node["source_location"]} if node.get("source_location") else {})})
+                e_added += 1
+    return {"nodes_added": len(nodes), "nodes_enriched": 0, "edges_added": e_added,
+            "treesitter_nodes_removed": len(removed_ids), "treesitter_edges_removed": dropped_edges}
+
+
+def _write_report(root: Path, cfg: ClangConfig, ex, stats: dict, c_files: list) -> Path | None:
+    try:
+        from graphify.paths import out_path
+        out = out_path()
+        out = out if out.is_absolute() else root / out
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / "clang_report.json"
+        report = {
+            "extractor": cfg.extractor, "config_source": cfg.source,
+            "compile_commands": str(cfg.resolve(cfg.compile_commands)) if cfg.compile_commands else None,
+            "a2l": str(cfg.resolve(cfg.a2l)) if cfg.a2l else None,
+            "c_files_requested": len(c_files), "c_files_parsed": ex.files_parsed if ex else 0,
+            "failed_to_load": ex.failed_files if ex else [],
+            "total_clang_errors": ex.parse_errors if ex else 0,
+            "calibration_pointers": ex.ptr_to_rom if ex else {},
+            "ignored_unregistered_pointers": ex.rejected_ptrs if ex else {},
+            "per_file": ex.file_info if ex else {},
+            "stats": {k: v for k, v in stats.items() if k != "a2l"},
+            "a2l_stats": stats.get("a2l"),
+        }
+        path.write_text(json.dumps(report, indent=1, default=str), encoding="utf-8")
+        return path
+    except Exception as exc:
+        LOG.warning("could not write clang_report.json: %s", exc)
+        return None
+
+
 def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
     """Run the clang (+ A2L) pass and merge its output into ``all_nodes`` / ``all_edges``.
 
+    ``cfg.extractor``: ``both`` (default) enriches tree-sitter's graph; ``clang`` replaces
+    tree-sitter's symbols for every C file clang parsed; ``treesitter`` skips this pass.
     Returns a stats dict, or None when the pass is not configured / not available.
     """
     root = Path(root).resolve()
@@ -840,17 +1047,29 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
                                    f"current directory, $GRAPHIFY_CLANG_CONFIG unset, no --clang flag. "
                                    f"Run `graphify clang-check` for details.")
         return None
+    log_path = _setup_logging(cfg, root)
+    LOG.info("extractor=%s | config: %s | root: %s | %d C file(s) in this run", cfg.extractor, cfg.source,
+             root, len(c_files))
+    if cfg.extractor == "treesitter":
+        LOG.info("extractor=tree-sitter chosen: clang pass skipped on purpose")
+        if c_files:
+            _warn_once("tsonly", "extractor = tree-sitter: clang pass skipped (as requested).")
+        return None
     stats: dict = {"files": 0}
+    ex = None
     if c_files:
         cindex = _load_cindex(cfg)
         if cindex is None:
+            LOG.error("libclang unavailable -> falling back to tree-sitter for ALL files")
             return None
+        LOG.info("libclang module: %s", getattr(cindex, "__file__", "?"))
         ex = ClangExtractor(cindex, root, cfg)
         cache_path = _cache_file(root)
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.is_file() else {}
         except (OSError, ValueError):
             cached = {}
+        LOG.debug("pointer cache %s: %d file(s) cached", cache_path, len(cached))
         ex.run(c_files, cached)
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -858,7 +1077,18 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
         except OSError:
             pass
         nodes, edges = ex.finalize()
-        stats.update(_merge_into(all_nodes, all_edges, nodes, edges, cfg, ex))
+        LOG.info("clang produced %d nodes / %d edges after dedup", len(nodes), len(edges))
+        if not ex.files_parsed:
+            LOG.error("0 C files parsed: keeping tree-sitter output unchanged")
+        elif cfg.extractor == "clang":
+            covered = set(ex.parsed_files) | {n["source_file"] for n in nodes
+                                               if n["type"] in ("function", "variable") and n.get("source_file")}
+            if ex.failed_files:
+                _warn_once("clangfallback", "extractor = clang: these C files could not be parsed and keep "
+                                            f"their tree-sitter symbols: {', '.join(ex.failed_files[:10])}")
+            stats.update(_replace_treesitter(all_nodes, all_edges, nodes, edges, covered, root))
+        else:
+            stats.update(_merge_into(all_nodes, all_edges, nodes, edges, cfg, ex))
         stats["files"] = ex.files_parsed
         stats["ptr_to_rom"] = len(ex.ptr_to_rom)
 
@@ -866,23 +1096,36 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
     if a2l_path is not None:
         if not a2l_path.is_file():
             _warn_once("noa2l", f"A2L file not found: {a2l_path}")
+            LOG.error("A2L file not found: %s", a2l_path)
         else:
             from graphify.extractors.a2l import join_a2l, scan_a2l
-            rel = None
             try:
                 rel = a2l_path.resolve().relative_to(root).as_posix()
             except ValueError:
                 rel = str(a2l_path.resolve())
-            stats["a2l"] = join_a2l(all_nodes, all_edges, scan_a2l(str(a2l_path)), rel)
+            parsed = scan_a2l(str(a2l_path))
+            LOG.info("A2L parsed: %d measurements, %d characteristics, %d axis_pts",
+                     len(parsed.get("measurements", {})), len(parsed.get("characteristics", {})),
+                     len(parsed.get("axis_pts", {})))
+            stats["a2l"] = join_a2l(all_nodes, all_edges, parsed, rel)
+            LOG.info("A2L join: %s", {k: v for k, v in stats["a2l"].items() if not k.startswith("unmatched")})
+            if stats["a2l"].get("unmatched_code"):
+                LOG.debug("code calibration fields with NO A2L match: %s", stats["a2l"]["unmatched_code"])
+            if stats["a2l"].get("unmatched_a2l"):
+                LOG.debug("A2L characteristics NOT matched by any code symbol: %s", stats["a2l"]["unmatched_a2l"])
 
     a2l = stats.get("a2l") or {}
     if c_files and not stats.get("files"):
         _warn_once("nofiles", "clang pass ran but parsed 0 C files (all failed to load); results are tree-sitter only.")
+    report = _write_report(root, cfg, ex, stats, c_files) if cfg.debug else None
     print(
-        f"[graphify] clang pass: {stats.get('files', 0)} C file(s), +{stats.get('nodes_added', 0)} nodes "
-        f"({stats.get('nodes_enriched', 0)} enriched), +{stats.get('edges_added', 0)} edges"
+        f"[graphify] clang pass ({cfg.extractor}): {stats.get('files', 0)} C file(s), "
+        f"+{stats.get('nodes_added', 0)} nodes ({stats.get('nodes_enriched', 0)} enriched)"
+        + (f", -{stats.get('treesitter_nodes_removed', 0)} tree-sitter nodes" if cfg.extractor == "clang" else "")
+        + f", +{stats.get('edges_added', 0)} edges"
         + (f", A2L matched {a2l.get('characteristics', 0)} characteristics / "
-           f"{a2l.get('measurements', 0)} measurements" if a2l else ""),
+           f"{a2l.get('measurements', 0)} measurements" if a2l else "")
+        + (f" | debug log: {log_path}, report: {report}" if log_path else ""),
         file=sys.stderr,
     )
     return stats
@@ -966,7 +1209,7 @@ def check_setup(root: Path | None = None) -> int:
     if cfg is None:
         line(False, f"no config found: create {root / CONFIG_NAME} (or pass --clang) - see wiki")
         return 1
-    line(True, f"config loaded (base dir {cfg.base_dir})")
+    line(True, f"config loaded from {cfg.source} (base dir {cfg.base_dir}); extractor = {cfg.extractor}; debug = {cfg.debug}")
     ci = _load_cindex(cfg)
     line(ci is not None, "libclang shared library loads" if ci else "libclang could not be loaded (set \"libclang\" in the config)")
     ok &= ci is not None

@@ -1074,6 +1074,25 @@ def _consume_clang_flags() -> None:
         name, eq, inline = a.partition("=")
         if a == "--clang":
             opts["enabled"] = True
+        elif a == "--clang-debug":
+            opts["debug"] = True
+        elif name == "--extractor":
+            if eq:
+                val = inline
+            elif i + 1 < len(args):
+                i += 1
+                val = args[i]
+            else:
+                print("error: --extractor needs a value (tree-sitter | clang | both)", file=sys.stderr)
+                sys.exit(2)
+            from graphify.extractors.clang_c import normalize_extractor
+            try:
+                opts["extractor"] = normalize_extractor(val)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(2)
+            if opts["extractor"] != "treesitter":
+                opts["enabled"] = True
         elif name in value_flags:
             if eq:
                 val = inline
@@ -1099,7 +1118,7 @@ def dispatch_command(cmd: str) -> None:
         _consume_clang_flags()
         from graphify.extractors.clang_c import check_setup
         sys.exit(check_setup(Path(sys.argv[2]) if len(sys.argv) > 2 else None))
-    if cmd in ("extract", "update"):
+    if cmd in ("extract", "update", "clang-check"):
         _consume_clang_flags()
     if cmd == "provider":
         from graphify.llm import _custom_providers_path, BACKENDS
