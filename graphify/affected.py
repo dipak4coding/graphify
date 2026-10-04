@@ -30,6 +30,12 @@ DEFAULT_AFFECTED_RELATIONS = (
     "embeds",
     "requires",
 )
+# Enrichment relations (clang pass / A2L join) come from the shared registry.
+from graphify.relations import affected_relations as _enrichment_relations  # noqa: E402
+
+DEFAULT_AFFECTED_RELATIONS = DEFAULT_AFFECTED_RELATIONS + tuple(
+    r for r in _enrichment_relations() if r not in DEFAULT_AFFECTED_RELATIONS
+)
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,107 @@
+"""Clang + A2L pass: toy-project tests (skipped when libclang is unavailable)."""
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+
+import pytest
+
+cindex = pytest.importorskip("clang.cindex")
+try:
+    cindex.Index.create()
+except Exception:  # pragma: no cover - libclang shared library missing
+    pytest.skip("libclang shared library not loadable", allow_module_level=True)
+
+from graphify.extract import extract  # noqa: E402
+from graphify.relations import affected_relations, context_for  # noqa: E402
+
+FIXTURE = Path(__file__).parent / "fixtures" / "clang_toy"
+
+
+@pytest.fixture()
+def toy(tmp_path):
+    for f in FIXTURE.iterdir():
+        shutil.copy(f, tmp_path / f.name)
+    (tmp_path / "graphify-clang.json").write_text(
+        json.dumps({"a2l": "toy.a2l", "extra_args": ["-I."]}), encoding="utf-8")
+    return tmp_path
+
+
+def _run(root: Path):
+    paths = sorted(root.glob("*.c"))
+    result = extract(paths, root=root)
+    return result["nodes"], result["edges"]
+
+
+def _by_label(nodes, label):
+    return next(n for n in nodes if n["label"] == label)
+
+
+def _edge(nodes, edges, src_label, relation, tgt_label):
+    s, t = _by_label(nodes, src_label)["id"], _by_label(nodes, tgt_label)["id"]
+    return next((e for e in edges if (e["source"], e["target"], e["relation"]) == (s, t, relation)), None)
+
+
+def test_read_write_collapse_and_context(toy):
+    nodes, edges = _run(toy)
+    e = _edge(nodes, edges, "Kku_BerKuehlAnf()", "reads_writes_var", "Kku_Anf")
+    assert e is not None, "read+write of one variable must be ONE reads_writes_var edge"
+    assert e["context"] == "readwrite"
+    assert e["source_location"].startswith("L")
+    assert not _edge(nodes, edges, "Kku_BerKuehlAnf()", "reads_var", "Kku_Anf")
+    assert not _edge(nodes, edges, "Kku_BerKuehlAnf()", "writes_var", "Kku_Anf")
+
+
+def test_cross_file_reader(toy):
+    nodes, edges = _run(toy)
+    assert _edge(nodes, edges, "Kku_Send()", "reads_var", "Kku_Out")
+
+
+def test_calibration_edges_and_ambiguous_expansion(toy):
+    nodes, edges = _run(toy)
+    assert _edge(nodes, edges, "Kku_BerKuehlAnf()", "reads_calibration_field", "KkuAppROM.SW_T_Oel")
+    assert _edge(nodes, edges, "KkuAppPtr", "exposes_calibration_field", "KkuAppROM.SW_T_Oel")
+    amb = _edge(nodes, edges, "Kku_Task10ms()", "reads_calibration_field", "KkuAppROM.Kku_Tab_kl[0]")
+    assert amb is not None and amb["confidence"] == "AMBIGUOUS"
+    flag = _by_label(nodes, "KkuAppROM.Kku_Flags#2")
+    assert flag["metadata"]["bit_mask"] == 2
+
+
+def test_axis_edges(toy):
+    nodes, edges = _run(toy)
+    assert _edge(nodes, edges, "KkuAppROM.Kku_Tab_kl", "x_axis", "KkuAppROM.Ax_X")
+    assert _edge(nodes, edges, "KkuAppROM.Kku_Tab_kl", "input_x", "Kku_T_Oel")
+
+
+def test_registration_args_are_not_reads(toy):
+    nodes, edges = _run(toy)
+    assert not _edge(nodes, edges, "Kku_Init()", "reads_var", "KkuAppROM")
+
+
+def test_a2l_join_and_searchable_text(toy):
+    nodes, edges = _run(toy)
+    code = _by_label(nodes, "KkuAppROM.SW_T_Oel")
+    assert "Oil temperature threshold" in (code.get("rationale") or "")
+    assert code["metadata"]["a2l_range"] == "0.0..150.0"
+    assert _edge(nodes, edges, "KkuAppROM.SW_T_Oel", "mapped_to_a2l_characteristic", "Kku_SW_T_Oel")
+    assert _by_label(nodes, "Axis_T")["type"] == "a2l_axis"
+
+
+def test_all_items_stamped_ast_so_update_rebuilds_them(toy):
+    nodes, edges = _run(toy)
+    assert all(n.get("_origin") == "ast" for n in nodes)
+    assert all(e.get("_origin") == "ast" for e in edges)
+
+
+def test_no_config_means_no_clang_items(toy):
+    (toy / "graphify-clang.json").unlink()
+    nodes, edges = _run(toy)
+    assert not any(e["relation"] in ("reads_var", "reads_calibration_field") for e in edges)
+
+
+def test_registry_feeds_affected_defaults():
+    from graphify.affected import DEFAULT_AFFECTED_RELATIONS
+    for rel in affected_relations():
+        assert rel in DEFAULT_AFFECTED_RELATIONS
+    assert context_for("reads_writes_var") == "readwrite"

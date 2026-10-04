@@ -821,6 +821,14 @@ _RELATIONAL_INTENT_TERMS: frozenset[str] = frozenset({
     "depend", "depends",
     "reference", "references", "referenced",
 })
+# Enrichment words (read / write / calibration ...) come from the relation registry.
+from graphify.relations import (  # noqa: E402
+    CONTEXT_IMPLIES as _CONTEXT_IMPLIES,
+    context_hints as _enrichment_context_hints,
+    intent_terms as _enrichment_intent_terms,
+)
+
+_RELATIONAL_INTENT_TERMS = _RELATIONAL_INTENT_TERMS | _enrichment_intent_terms()
 
 
 _CONTEXT_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -830,7 +838,7 @@ _CONTEXT_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("parameter_type", ("parameter", "parameters", "param", "params", "argument", "arguments")),
     ("return_type", ("return", "returns", "returned")),
     ("generic_arg", ("generic", "generics", "template", "templates")),
-)
+) + _enrichment_context_hints()
 
 
 _CONTEXT_FILTER_ALIASES: dict[str, str] = {
@@ -868,6 +876,11 @@ _CONTEXT_FILTER_ALIASES: dict[str, str] = {
     "modules": "import",
     "exports": "export",
     "exported": "export",
+    "reads": "read", "reader": "read", "readers": "read",
+    "writes": "write", "written": "write", "writer": "write", "writers": "write",
+    "calibrations": "calibration", "applicative": "calibration",
+    "axes": "axis", "breakpoint": "axis", "breakpoints": "axis",
+    "asap2": "a2l",
 }
 
 
@@ -913,6 +926,8 @@ def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> 
     filters = set(_normalize_context_filters(context_filters))
     if not filters:
         return G
+    for _f in list(filters):  # a "read" filter must keep "readwrite" edges too
+        filters.update(_CONTEXT_IMPLIES.get(_f, ()))
     H = G.__class__()
     H.add_nodes_from(G.nodes(data=True))
     if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
@@ -1089,12 +1104,22 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             status = sanitize_label(str(entry.get("status", "")))
             if status:
                 learning_suffix = f" learning={status}{':stale' if entry.get('stale') else ''}"
+        _meta = d.get("metadata") if isinstance(d.get("metadata"), dict) else {}
+        _kind = d.get("type") if d.get("type") in (
+            "variable", "calibration_field", "a2l_characteristic", "a2l_axis") else None
+        _extra = ""
+        if _kind:
+            _extra += f" kind={sanitize_label(str(_kind))}"
+        if _meta.get("a2l_range"):
+            _extra += f" range={sanitize_label(str(_meta['a2l_range']))}"
+        if _meta.get("bit_mask") is not None:
+            _extra += f" mask={_meta['bit_mask']}"
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
             f"loc={sanitize_label(str(d.get('source_location', '')))} "
             f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
-            f"{learning_suffix}]"
+            f"{_extra}{learning_suffix}]"
         )
         lines.append(line)
     for u, v in edges:
