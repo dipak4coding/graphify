@@ -1,0 +1,28 @@
+/begin PROJECT P ""
+/begin MODULE M ""
+/begin MEASUREMENT Kku_T_Oel "Oil temperature measured"
+SWORD T_FP 0 0 -3276.8 3276.7
+LINK_MAP "Kku_T_Oel" 0 0 0 0 0
+/end MEASUREMENT
+/begin COMPU_METHOD T_FP "temperature"
+LINEAR "%6.1" "degC"
+COEFFS_LINEAR 0.1 0
+/end COMPU_METHOD
+/begin CHARACTERISTIC Kku_SW_T_Oel "Oil temperature threshold for cooling request"
+VALUE 0x1000 RL_S16 0 T_FP 0 150
+SYMBOL_LINK "KkuAppROM.SW_T_Oel" 0
+/end CHARACTERISTIC
+/begin CHARACTERISTIC Kku_Tab_kl "Cooling curve over oil temperature"
+CURVE 0x1010 RL_S16 0 T_FP 0 100
+/begin AXIS_DESCR
+STD_AXIS NO_INPUT_QUANTITY T_FP 2 -30 160
+AXIS_PTS_REF Axis_T
+/end AXIS_DESCR
+SYMBOL_LINK "KkuAppROM.Kku_Tab_kl[0]" 0
+/end CHARACTERISTIC
+/begin AXIS_PTS Axis_T "Temperature axis"
+0x1100 NO_INPUT_QUANTITY SWORD 0 T_FP 2 -30 160
+SYMBOL_LINK "KkuAppROM.Ax_X[0]" 0
+/end AXIS_PTS
+/end MODULE
+/end PROJECT

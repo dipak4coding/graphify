@@ -7574,6 +7574,16 @@ def extract(
     else:
         run_language_resolvers(paths, per_file, all_nodes, all_edges)
 
+    # Optional clang semantic pass for C (+ A2L join). Off unless graphify-clang.json /
+    # GRAPHIFY_CLANG_CONFIG / `--clang` is set. Items are stamped _origin="ast" below
+    # with everything else, so `graphify update` evicts and rebuilds them per file.
+    try:
+        from graphify.extractors.clang_c import run_clang_pass
+        run_clang_pass(paths, anchor_root or root or Path("."), all_nodes, all_edges)
+    except Exception as _clang_exc:  # never let the optional pass break extraction
+        print(f"[graphify] clang pass failed, continuing with tree-sitter only: "
+              f"{type(_clang_exc).__name__}: {_clang_exc}", file=sys.stderr)
+
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a
     # portable id and rewrite the edge endpoints that reference it.
