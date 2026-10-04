@@ -415,8 +415,20 @@ if [ -z "$CHANGED" ]; then
     exit 0
 fi
 
-# Skip when only graphify-out/ artifacts changed (avoids rebuild loop when graph outputs are tracked in git)
-_NON_GRAPH=$(echo "$CHANGED" | grep -v '^graphify-out/' || true)
+# Skip when only output-dir artifacts changed (avoids rebuild loop when graph
+# outputs are tracked in git). The dir is whatever GRAPHIFY_OUT names, the same
+# source the rebuild body reads (#1423): a literal graphify-out/ here let a
+# commit touching only a renamed output dir's graph.json trigger a full rebuild.
+_GFY_OUT="${GRAPHIFY_OUT:-graphify-out}"
+_GFY_OUT="${_GFY_OUT%/}"
+# The leading ( on each pattern is POSIX and keeps bash 3.2 (macOS /bin/sh)
+# from mis-parsing the pattern's ) as the end of the $(...) substitution.
+_NON_GRAPH=$(printf '%s\n' "$CHANGED" | while IFS= read -r _GFY_F; do
+    case "$_GFY_F" in
+        ("$_GFY_OUT"/*) ;;
+        (*) printf '%s\n' "$_GFY_F" ;;
+    esac
+done)
 if [ -z "$_NON_GRAPH" ]; then
     exit 0
 fi
@@ -468,8 +480,11 @@ fi
 # branch switch but leaves the tree unchanged ΓÇö nothing to rebuild (#2421).
 [ "$PREV_HEAD" = "$NEW_HEAD" ] && exit 0
 
-# Only run if graphify-out/ exists (graph has been built before)
-if [ ! -d "graphify-out" ]; then
+# Only run if the output dir exists (graph has been built before). Resolve it
+# from GRAPHIFY_OUT like the rebuild body does (#1423): a literal graphify-out/
+# here made the branch-switch rebuild a silent no-op for every renamed output dir.
+_GFY_OUT="${GRAPHIFY_OUT:-graphify-out}"
+if [ ! -d "${_GFY_OUT%/}" ]; then
     exit 0
 fi
 
@@ -890,6 +905,23 @@ def uninstall(path: Path = Path(".")) -> str:
     return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
 
 
+# The two per-install values in a graphify block: the interpreter that ran
+# `hook install` and the .graphifyrc viz limit (status checks that one itself).
+_PINNED_LINE_RE = re.compile(r"^_PINNED='[^'\n]*'$", re.MULTILINE)
+_VIZ_EXPORT_LINE_RE = re.compile(r"^export GRAPHIFY_VIZ_NODE_LIMIT=.*\n", re.MULTILINE)
+
+
+def _comparable_block(text: str, marker: str, marker_end: str) -> str | None:
+    """The graphify block in *text* with its per-install values blanked out, or
+    None when the block has no end marker (install cannot rewrite those either)."""
+    start = text.find(marker)
+    end = text.find(marker_end, start) if start != -1 else -1
+    if end == -1:
+        return None
+    block = text[start:end + len(marker_end)]
+    return _VIZ_EXPORT_LINE_RE.sub("", _PINNED_LINE_RE.sub("_PINNED=''", block))
+
+
 def status(path: Path = Path(".")) -> str:
     """Check if graphify hooks are installed."""
     root = _git_root(path)
@@ -905,7 +937,7 @@ def status(path: Path = Path(".")) -> str:
         print(f"  warning: {exc}")
     cfg_limit = cfg.get("viz_node_limit")
 
-    def _check(name: str, marker: str) -> str:
+    def _check(name: str, marker: str, marker_end: str, script: str) -> str:
         p = hooks_dir / name
         if not p.exists():
             return "not installed"
@@ -927,10 +959,16 @@ def status(path: Path = Path(".")) -> str:
                     f"{installed_limit if installed_limit is not None else 'unset'}, "
                     f".graphifyrc has {cfg_limit})"
                 )
+        # Upgrading the package does not touch hooks already on disk, so a block
+        # from an older release keeps running its old script (#3771).
+        installed = _comparable_block(text, marker, marker_end)
+        current = _comparable_block(script.replace("__VIZ_LIMIT_EXPORT__", ""), marker, marker_end)
+        if installed is not None and installed != current:
+            return "installed (out of date: run `graphify hook install` to refresh it)"
         return "installed"
 
-    commit = _check("post-commit", _HOOK_MARKER)
-    checkout = _check("post-checkout", _CHECKOUT_MARKER)
+    commit = _check("post-commit", _HOOK_MARKER, _HOOK_MARKER_END, _HOOK_SCRIPT)
+    checkout = _check("post-checkout", _CHECKOUT_MARKER, _CHECKOUT_MARKER_END, _CHECKOUT_SCRIPT)
     merge = _merge_driver_status(root)
 
     res = f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"

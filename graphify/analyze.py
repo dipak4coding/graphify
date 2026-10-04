@@ -38,9 +38,12 @@ _LANG_FAMILY: dict[str, str] = {
     **{e: "c" for e in (".c", ".h", ".cpp", ".cc", ".cxx", ".hpp")},
     **{e: "ruby" for e in (".rb", ".rake")},
     **{e: "swift" for e in (".swift",)},
-    **{e: "dotnet" for e in (".cs",)},
+    **{e: "dotnet" for e in (".cs", ".vb")},
     **{e: "php" for e in (".php",)},
     **{e: "r" for e in (".r",)},
+    **{e: "cobol" for e in (".cbl", ".cob", ".cobol", ".cpy")},
+    **{e: "solidity" for e in (".sol",)},
+    **{e: "erlang" for e in (".erl", ".hrl", ".escript")},
 }
 
 
@@ -211,8 +214,19 @@ def _file_category(path: str) -> str:
 
 
 def _top_level_dir(path: str) -> str:
-    """Return the first path component - used to detect cross-repo edges."""
-    return path.split("/")[0] if "/" in path else path
+    """Return the first path component - used to detect cross-repo edges.
+
+    A path with no "/" is a file at the scan root, so its top-level directory
+    is the root itself ("."), not the filename: otherwise every pair of
+    root-level files would look like it crosses repos/directories. "." keeps
+    root files distinct from an absolute path outside the root, whose first
+    component is "". Backslashes and a leading "./" are normalised first,
+    since a graph.json loaded without build_from_json can still carry them.
+    """
+    path = path.replace("\\", "/")
+    while path.startswith("./"):
+        path = path[2:]
+    return path.split("/")[0] if "/" in path else "."
 
 
 def _surprise_score(
@@ -260,8 +274,12 @@ def _surprise_score(
         score += 2
         reasons.append(f"crosses file types ({cat_u} ↔ {cat_v})")
 
-    # 3. Cross-repo bonus - different top-level directory
-    if _top_level_dir(u_source) != _top_level_dir(v_source) and not _suppress_structural:
+    # 3. Cross-repo bonus - different top-level directory. merge-graphs /
+    # global add keep source_file repo-relative and tag nodes with `repo`, so
+    # the repo is part of the key (absent on a single-repo graph).
+    top_u = (G.nodes[u].get("repo"), _top_level_dir(u_source))
+    top_v = (G.nodes[v].get("repo"), _top_level_dir(v_source))
+    if top_u != top_v and not _suppress_structural:
         score += 2
         reasons.append("connects across different repos/directories")
 
