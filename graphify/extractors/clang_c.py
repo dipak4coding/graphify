@@ -833,9 +833,13 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
     """
     root = Path(root).resolve()
     cfg = load_config(root)
-    if cfg is None:
-        return None
     c_files = [Path(p).resolve() for p in paths if Path(p).suffix.lower() == ".c"]
+    if cfg is None:
+        if c_files:  # say WHY, once: a silent fallback looks like a bug
+            _warn_once("noconfig", f"clang pass OFF (tree-sitter only): no {CONFIG_NAME} in {root} or the "
+                                   f"current directory, $GRAPHIFY_CLANG_CONFIG unset, no --clang flag. "
+                                   f"Run `graphify clang-check` for details.")
+        return None
     stats: dict = {"files": 0}
     if c_files:
         cindex = _load_cindex(cfg)
@@ -872,6 +876,8 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
             stats["a2l"] = join_a2l(all_nodes, all_edges, scan_a2l(str(a2l_path)), rel)
 
     a2l = stats.get("a2l") or {}
+    if c_files and not stats.get("files"):
+        _warn_once("nofiles", "clang pass ran but parsed 0 C files (all failed to load); results are tree-sitter only.")
     print(
         f"[graphify] clang pass: {stats.get('files', 0)} C file(s), +{stats.get('nodes_added', 0)} nodes "
         f"({stats.get('nodes_enriched', 0)} enriched), +{stats.get('edges_added', 0)} edges"
@@ -938,3 +944,44 @@ def _merge_into(all_nodes, all_edges, nodes, edges, cfg: ClangConfig, ex: ClangE
                 })
                 e_added += 1
     return {"nodes_added": added, "nodes_enriched": enriched, "edges_added": e_added}
+
+
+def check_setup(root: Path | None = None) -> int:
+    """`graphify clang-check`: explain, step by step, whether the clang pass will run."""
+    root = Path(root or ".").resolve()
+    ok = True
+
+    def line(flag, msg):
+        print(f"[{'OK ' if flag else 'FAIL'}] {msg}")
+
+    try:
+        import clang.cindex as cindex  # noqa: F401
+        line(True, f"python package 'libclang' importable (python: {sys.executable})")
+    except ImportError:
+        line(False, f"python package 'libclang' NOT installed in this Python ({sys.executable}). "
+                    f"Install it into the SAME environment as graphify: "
+                    f"`{sys.executable} -m pip install libclang`")
+        return 1
+    cfg = load_config(root)
+    if cfg is None:
+        line(False, f"no config found: create {root / CONFIG_NAME} (or pass --clang) - see wiki")
+        return 1
+    line(True, f"config loaded (base dir {cfg.base_dir})")
+    ci = _load_cindex(cfg)
+    line(ci is not None, "libclang shared library loads" if ci else "libclang could not be loaded (set \"libclang\" in the config)")
+    ok &= ci is not None
+    cc = cfg.resolve(cfg.compile_commands)
+    if cc is None:
+        line(True, "no compile_commands.json configured: using extra_args / -I<file dir> (includes may be missing)")
+    else:
+        line(cc.is_file(), f"compile_commands.json: {cc}")
+        ok &= cc.is_file()
+    a2l = cfg.resolve(cfg.a2l)
+    if a2l is not None:
+        line(a2l.is_file(), f"A2L file: {a2l}")
+        ok &= a2l.is_file()
+    n_c = sum(1 for _ in root.rglob("*.c"))
+    line(n_c > 0, f"{n_c} .c file(s) under {root}")
+    print("Ready: the clang pass will run on `graphify update`/`extract`." if ok else
+          "Not ready: fix the FAIL lines above.")
+    return 0 if ok else 1

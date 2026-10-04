@@ -75,3 +75,22 @@ Legend: DONE / PARTIAL / TODO / DECIDED.
 - Finding 9: writer -> reader path (`feeds` edge or direction-aware command)
 - Run on a real-size project (first real `compile_commands.json`)
 - `.github/copilot-instructions.md` text, push, optional PR to `current-v8` only if asked (T10)
+
+## 7. First real run fell back to tree-sitter (reported 2026-10-04)
+
+| Likely cause | How the pass now tells you |
+|---|---|
+| No `graphify-clang.json` / no `--clang` flag | prints `clang pass OFF (tree-sitter only): no graphify-clang.json in <root>` |
+| `libclang` not installed in the Python that runs graphify (venv / pipx / uv tool) | `clang-check` shows the exact interpreter and the `pip install` line |
+| libclang DLL not found (Windows) | `clang-check` FAIL line; set `"libclang": "C:/.../libclang.dll"` in the config |
+| `compile_commands.json` path wrong | `clang-check` FAIL line |
+
+Run `graphify clang-check <project root>` first. Minimal `graphify-clang.json` in the project root:
+
+```json
+{
+  "compile_commands": "compile_commands.json",
+  "a2l": "path/to/file.a2l",
+  "libclang": "optional path to libclang.dll / .so"
+}
+```

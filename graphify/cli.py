@@ -1095,6 +1095,10 @@ def _consume_clang_flags() -> None:
 
 
 def dispatch_command(cmd: str) -> None:
+    if cmd == "clang-check":
+        _consume_clang_flags()
+        from graphify.extractors.clang_c import check_setup
+        sys.exit(check_setup(Path(sys.argv[2]) if len(sys.argv) > 2 else None))
     if cmd in ("extract", "update"):
         _consume_clang_flags()
     if cmd == "provider":
