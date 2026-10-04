@@ -1116,7 +1116,16 @@ def _consume_clang_flags() -> None:
 def dispatch_command(cmd: str) -> None:
     if cmd == "clang-check":
         _consume_clang_flags()
-        from graphify.extractors.clang_c import check_setup
+        from graphify.extractors.clang_c import check_file, check_setup
+        _argv = sys.argv[2:]
+        if "--file" in _argv:
+            _i = _argv.index("--file")
+            if _i + 1 >= len(_argv):
+                print("error: --file needs a path", file=sys.stderr)
+                sys.exit(2)
+            _file = Path(_argv[_i + 1])
+            _rest = [a for k, a in enumerate(_argv) if k not in (_i, _i + 1)]
+            sys.exit(check_file(Path(_rest[0]) if _rest else Path("."), _file))
         sys.exit(check_setup(Path(sys.argv[2]) if len(sys.argv) > 2 else None))
     if cmd in ("extract", "update", "clang-check"):
         _consume_clang_flags()

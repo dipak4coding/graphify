@@ -190,3 +190,26 @@ def test_extractor_flag_parsing(monkeypatch):
     assert sys.argv == ["graphify", "update", "."]
     assert clang_c._runtime_override["extractor"] == "clang" and clang_c._runtime_override["debug"] is True
     monkeypatch.setattr(clang_c, "_runtime_override", None)
+
+
+def test_compile_commands_relative_include_rsp_and_build_flags(tmp_path):
+    """Preprocessing: relative -I against the command's directory, @rsp expansion, -o/-MD dropped."""
+    from graphify.extractors.clang_c import ClangConfig, normalize_args
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "flags.rsp").write_text("-I../inc -DFOO=1", encoding="utf-8")
+    cfg = ClangConfig(base_dir=str(tmp_path), drop_args=["-mcpu"], append_args=["-Ihw", "-DX=2"])
+    args = normalize_args(
+        ["tricore-gcc", "-c", "-o", "a.o", "-MD", "-MF", "a.d", "-mcpu=tc39", "@flags.rsp", "../src/a.c"],
+        str(tmp_path / "build"), cfg, tmp_path / "src" / "a.c")
+    assert "-o" not in args and "-MD" not in args and "-c" not in args and "-mcpu=tc39" not in args
+    assert any(a.endswith("inc") and a.startswith("-I") and (tmp_path / "build").as_posix() in a.replace("\\", "/") for a in args)
+    assert "-DFOO=1" in args and "-DX=2" in args
+    assert any(a.startswith("-I") and a.replace("\\", "/").endswith(f"{tmp_path.name}/hw") for a in args)
+    assert not any(a.endswith("a.c") for a in args)
+
+
+def test_missing_include_is_reported(toy):
+    (toy / "needs_hw.c").write_text('#include "no_such_hw.h"\nint Hw_Fn(void){return 1;}\n', encoding="utf-8")
+    _extract_with(toy, "both", debug=True)
+    data = json.loads((toy / "graphify-out" / "clang_report.json").read_text(encoding="utf-8"))
+    assert data["missing_includes_top"].get("no_such_hw.h") == 1

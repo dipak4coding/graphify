@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import sys
 from dataclasses import dataclass, field
@@ -75,6 +76,8 @@ class ClangConfig:
         default_factory=lambda: ["Bios_RegisterCalibrationData", "RegisterCalibrationData"]
     )
     base_dir: str = "."  # directory the relative paths above resolve against
+    drop_args: list = field(default_factory=list)  # compile-command args to remove (prefix match), e.g. ["-mcpu", "--option"]
+    append_args: list = field(default_factory=list)  # always appended, e.g. ["-DTRICORE=1", "--target=arm-none-eabi"]
     extractor: str = "both"  # treesitter | clang | both  (clang = replace tree-sitter's C output)
     debug: bool = False  # verbose log to stderr + graphify-out/clang_debug.log + clang_report.json
     source: str = "defaults"  # where the config came from (for the debug log)
@@ -102,7 +105,7 @@ def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
             setattr(cfg, key, data[key])
     if "extractor" in data:
         cfg.extractor = normalize_extractor(data["extractor"])
-    for key in ("scope", "extra_args", "register_functions"):
+    for key in ("scope", "extra_args", "register_functions", "drop_args", "append_args"):
         if key in data and data[key]:
             setattr(cfg, key, list(data[key]))
     return cfg
@@ -243,6 +246,80 @@ def _load_compile_commands(path: Path) -> dict:
 # Extraction
 # ---------------------------------------------------------------------------
 
+_PATH_FLAGS = ("-I", "-isystem", "-iquote", "-idirafter", "-include", "-imacros", "-F", "-isysroot", "--sysroot=")
+_DROP_WITH_VALUE = {"-o", "-MF", "-MT", "-MQ", "-Xclang"}
+_DROP_FLAGS = {"-c", "-MD", "-MMD", "-MP", "-MG", "-M", "-MM", "-S", "-E"}
+
+
+def _expand_response_files(args: list, directory: str) -> list:
+    out = []
+    for a in args:
+        if a.startswith("@") and len(a) > 1:
+            rsp = Path(a[1:])
+            rsp = rsp if rsp.is_absolute() else Path(directory) / rsp
+            try:
+                out.extend(shlex.split(rsp.read_text(encoding="utf-8", errors="replace"), posix=(os.name != "nt")))
+                continue
+            except OSError:
+                LOG.warning("response file not readable: %s", rsp)
+        out.append(a)
+    return out
+
+
+def normalize_args(args: list, directory: str, cfg: "ClangConfig", source_file: Path) -> list:
+    """Turn a build command into libclang parse args.
+
+    * relative include paths are resolved against the compile command's ``directory``
+      (the #1 cause of 'file not found' for entries from a build tool),
+    * options a parse does not need or that libclang rejects (-o, -MD, -c, ...) are removed,
+    * ``drop_args`` / ``append_args`` from the config are applied.
+    """
+    args = _expand_response_files(list(args), directory)
+    base = Path(directory)
+    src_norm = os.path.normcase(os.path.normpath(os.path.abspath(source_file)))
+    out: list = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in _DROP_WITH_VALUE:
+            i += 2
+            continue
+        if a in _DROP_FLAGS or (a.startswith("-o") and len(a) > 2 and not a.startswith("-openmp")) \
+                or a.startswith("-Fo") or a.startswith("-MF"):
+            i += 1
+            continue
+        if any(a.startswith(d) for d in cfg.drop_args):
+            i += 1
+            continue
+        matched = next((f for f in _PATH_FLAGS if a.startswith(f)), None)
+        if matched:
+            val = a[len(matched):]
+            if val == "" and i + 1 < len(args) and not matched.endswith("="):  # "-I", "path"
+                val = args[i + 1]
+                p = Path(val)
+                out.extend([matched, str(p if p.is_absolute() else (base / p))])
+                i += 2
+                continue
+            p = Path(val) if val else None
+            out.append(matched + (str(p if p.is_absolute() else (base / p)) if p else ""))
+            i += 1
+            continue
+        if not a.startswith("-"):  # compiler executable or the source file itself
+            if os.path.normcase(os.path.normpath(os.path.abspath(base / a))) == src_norm or i == 0:
+                i += 1
+                continue
+        out.append(a)
+        i += 1
+    out += ["-ferror-limit=0", "-Wno-everything"]
+    cfg_base = Path(cfg.base_dir)
+    for a in cfg.append_args:  # relative include paths here are relative to the config file
+        f = next((f for f in _PATH_FLAGS if a.startswith(f) and len(a) > len(f)), None)
+        if f and not Path(a[len(f):]).is_absolute():
+            a = f + str(cfg_base / a[len(f):])
+        out.append(a)
+    return out
+
+
 _IDX_PLACEHOLDER = "{IDX}"
 
 _IPO_LOOKUP_ROLES = {
@@ -284,6 +361,7 @@ class ClangExtractor:
         self.file_info: dict = {}  # rel file -> diagnostics / args source / counts (debug report)
         self.rejected_ptrs: dict = {}  # pointer name -> accesses ignored because not registered
         self.failed_files: list = []
+        self.missing_includes: dict = {}  # header -> number of 'file not found' errors
         self.parsed_files: list = []
         self._args_src = "?"
         self._pass_pt = {self.K.UNEXPOSED_EXPR, self.K.PAREN_EXPR, self.K.CSTYLE_CAST_EXPR,
@@ -748,14 +826,9 @@ class ClangExtractor:
         if self.cc_index is not None:
             hit = self.cc_index.get(os.path.normcase(os.path.normpath(os.path.abspath(path))))
             if hit:
-                args, _directory = hit
-                if args and not args[0].startswith("-"):
-                    args = args[1:]
-                if args and os.path.normcase(os.path.normpath(os.path.abspath(args[-1]))) == \
-                        os.path.normcase(os.path.normpath(os.path.abspath(path))):
-                    args = args[:-1]
+                args, directory = hit
                 self._args_src = "compile_commands"
-                return [a for a in args if a != "-c"]
+                return normalize_args(args, directory, self.cfg, path)
             _warn_once(f"cc:{path}", f"{path.name} not in compile_commands.json; using extra_args")
             self._args_src = "extra_args (NOT in compile_commands.json)"
         else:
@@ -764,7 +837,7 @@ class ClangExtractor:
         if not args:
             args = [f"-I{path.parent}"]
             self._args_src = "default -I<file dir> (no compile flags: includes may be missing)"
-        return args
+        return normalize_args(["clang"] + args, self.cfg.base_dir, self.cfg, path)
 
     def _scan_registrations(self, tu_cursor) -> dict:
         found: dict = {}
@@ -825,6 +898,10 @@ class ClangExtractor:
             where = f"{self.sf(str(loc.file))}:{loc.line}:{loc.column}" if loc.file else "?"
             if d.severity >= sev.Error:
                 info["errors"] += 1
+                m = re.search(r"'([^']+)' file not found", d.spelling)
+                if m:
+                    self.missing_includes[m.group(1)] = self.missing_includes.get(m.group(1), 0) + 1
+                    info.setdefault("missing_includes", []).append(m.group(1))
                 if len(info["error_samples"]) < 10:
                     info["error_samples"].append(f"{where}: {d.spelling}")
                 LOG.warning("clang error %s: %s", where, d.spelling)
@@ -874,6 +951,10 @@ class ClangExtractor:
             self.file_info[rel]["edges_added"] = len(self.edges) - e0
             LOG.info("walked %s: +%d nodes, +%d edges (before dedup)", rel,
                      len(self.nodes) - n0, len(self.edges) - e0)
+        if self.missing_includes:
+            top = sorted(self.missing_includes.items(), key=lambda kv: -kv[1])[:15]
+            LOG.warning("PREPROCESSING: %d distinct header(s) not found - add their folders as -I in "
+                        "compile_commands or append_args. Most frequent: %s", len(self.missing_includes), top)
         if self.rejected_ptrs:
             LOG.debug("member accesses ignored (pointer NOT registered as calibration): %s", self.rejected_ptrs)
 
@@ -1020,6 +1101,7 @@ def _write_report(root: Path, cfg: ClangConfig, ex, stats: dict, c_files: list) 
             "total_clang_errors": ex.parse_errors if ex else 0,
             "calibration_pointers": ex.ptr_to_rom if ex else {},
             "ignored_unregistered_pointers": ex.rejected_ptrs if ex else {},
+            "missing_includes_top": dict(sorted(ex.missing_includes.items(), key=lambda kv: -kv[1])[:40]) if ex else {},
             "per_file": ex.file_info if ex else {},
             "stats": {k: v for k, v in stats.items() if k != "a2l"},
             "a2l_stats": stats.get("a2l"),
@@ -1228,3 +1310,36 @@ def check_setup(root: Path | None = None) -> int:
     print("Ready: the clang pass will run on `graphify update`/`extract`." if ok else
           "Not ready: fix the FAIL lines above.")
     return 0 if ok else 1
+
+
+def check_file(root: Path, c_file: Path) -> int:
+    """`graphify clang-check <root> --file x.c`: parse ONE file and show the exact command,
+    every error, and the headers clang could not find (preprocessing problems)."""
+    root = Path(root or ".").resolve()
+    cfg = load_config(root) or ClangConfig(base_dir=str(root))
+    ci = _load_cindex(cfg)
+    if ci is None:
+        print("[FAIL] libclang not available - run `graphify clang-check` first")
+        return 1
+    c_file = Path(c_file)
+    c_file = (c_file if c_file.is_absolute() else Path.cwd() / c_file).resolve()
+    ex = ClangExtractor(ci, root, cfg)
+    tu = ex.parse(c_file)
+    rel = ex.sf(str(c_file))
+    info = ex.file_info.get(rel, {})
+    print(f"file:        {rel}")
+    print(f"flags from:  {info.get('args_source')}")
+    print(f"arguments:   {' '.join(info.get('args', []))}")
+    if tu is None:
+        print(f"[FAIL] could not load: {info.get('load_error')}")
+        return 1
+    print(f"errors: {info.get('errors', 0)}   warnings: {info.get('warnings', 0)}")
+    for d in tu.diagnostics:
+        if d.severity >= ci.Diagnostic.Error:
+            loc = d.location
+            print(f"  {ex.sf(str(loc.file)) if loc.file else '?'}:{loc.line}: {d.spelling}")
+    if ex.missing_includes:
+        print("\nHeaders NOT FOUND (preprocessing): add their folders with -I:")
+        for h, n in sorted(ex.missing_includes.items(), key=lambda kv: -kv[1]):
+            print(f"  {h}  (x{n})")
+    return 0 if not info.get("errors") else 2

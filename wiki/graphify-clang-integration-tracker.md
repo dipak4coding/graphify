@@ -119,3 +119,15 @@ Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef n
 | `clang pass OFF` | no `graphify-clang.json` found; user's compile DB is named `compile_commands_full.json` (set `"compile_commands"` accordingly) |
 | 214 files with syntax errors | tree-sitter has no preprocessor; macro-heavy / compiler-specific C (headers especially) trips it. Message only named 5 files, so `graphify-out/syntax_errors.txt` now lists all, with counts per extension |
 | Headers are extracted by tree-sitter | yes (`.h` is scanned as C). Clang reads headers through the `.c` files that include them, with the real preprocessor |
+
+## 10. Preprocessing problems (reported 2026-10-04: "clang still has issues")
+
+| Cause | Fix in code |
+|---|---|
+| Relative `-I` in `compile_commands` resolved against the wrong folder (the entry's `directory` was ignored) | include paths (`-I -isystem -iquote -include ...`) are now resolved against the entry's `directory` |
+| Build-tool flags libclang chokes on (`-o`, `-MD`, `-MF`, `-c`) | removed |
+| `@file.rsp` response files | expanded |
+| Cross-compiler-only flags (`-mcpu=...`) | config `drop_args` (prefix match) |
+| Missing defines / target / extra include folders | config `append_args` (relative `-I` is relative to the config file) |
+| Which header is missing? | `clang_report.json` -> `missing_includes_top`, plus a PREPROCESSING warning in the debug log |
+| One file at a time | `graphify clang-check . --file path\to\x.c` prints exact arguments, every error, missing headers |
