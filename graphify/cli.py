@@ -1268,7 +1268,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--depth N] [--context C] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -1278,12 +1278,24 @@ def dispatch_command(cmd: str) -> None:
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
         budget = 2000
+        query_depth = 2  # hops from each start node; --depth N (1-6) overrides
         graph_path = _default_graph_path()
         context_filters: list[str] = []
         args = sys.argv[3:]
         i = 0
         while i < len(args):
-            if args[i] == "--budget" and i + 1 < len(args):
+            if (args[i] == "--depth" and i + 1 < len(args)) or args[i].startswith("--depth="):
+                _raw = args[i + 1] if args[i] == "--depth" else args[i].split("=", 1)[1]
+                try:
+                    query_depth = int(_raw)
+                except ValueError:
+                    print("error: --depth must be an integer (1-6)", file=sys.stderr)
+                    sys.exit(1)
+                if not 1 <= query_depth <= 6:
+                    print("error: --depth must be between 1 and 6", file=sys.stderr)
+                    sys.exit(1)
+                i += 2 if args[i] == "--depth" else 1
+            elif args[i] == "--budget" and i + 1 < len(args):
                 try:
                     budget = int(args[i + 1])
                 except ValueError:
@@ -1370,7 +1382,7 @@ def dispatch_command(cmd: str) -> None:
             G,
             question,
             mode=_mode,
-            depth=2,
+            depth=query_depth,
             token_budget=budget,
             context_filters=context_filters,
             graph_path=str(gp),
@@ -1381,7 +1393,7 @@ def dispatch_command(cmd: str) -> None:
             corpus=str(gp),
             result=_result,
             mode=_mode,
-            depth=2,
+            depth=query_depth,
             token_budget=budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
         )

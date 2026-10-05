@@ -213,3 +213,20 @@ def test_missing_include_is_reported(toy):
     _extract_with(toy, "both", debug=True)
     data = json.loads((toy / "graphify-out" / "clang_report.json").read_text(encoding="utf-8"))
     assert data["missing_includes_top"].get("no_such_hw.h") == 1
+
+
+def test_cli_query_depth_flag(toy, monkeypatch, capsys):
+    import sys
+    from graphify import cli
+    _run(toy)  # builds nothing on disk; use update for a graph.json
+    monkeypatch.chdir(toy)
+    monkeypatch.setattr(sys, "argv", ["graphify", "update", "."])
+    from graphify.extractors import clang_c
+    clang_c.set_runtime_config()
+    cli.dispatch_command("update")
+    capsys.readouterr()
+    for depth in ("1", "3"):
+        monkeypatch.setattr(sys, "argv", ["graphify", "query", "SW_T_Oel", "--depth", depth,
+                                          "--graph", str(toy / "graphify-out" / "graph.json")])
+        cli.dispatch_command("query")
+        assert f"depth={depth}" in capsys.readouterr().out

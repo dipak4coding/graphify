@@ -131,3 +131,13 @@ Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef n
 | Missing defines / target / extra include folders | config `append_args` (relative `-I` is relative to the config file) |
 | Which header is missing? | `clang_report.json` -> `missing_includes_top`, plus a PREPROCESSING warning in the debug log |
 | One file at a time | `graphify clang-check . --file path\to\x.c` prints exact arguments, every error, missing headers |
+
+## 11. Hop depth (asked 2026-10-05)
+
+| Surface | Depth control | Default / limit |
+|---|---|---|
+| `graphify query` (CLI) | `--depth N` (new) | default 2, range 1-6 |
+| MCP tool `query_graph` (what the AI calls) | `depth` argument | default 3, capped at 6 in `serve.py` (`_tool_query_graph`) |
+| `graphify affected` | `--depth N` | default 2 |
+| Output size | `--budget N` / `token_budget` | default 2000 tokens; more hops need a bigger budget |
+| Hubs | not expanded through unless they are a start node (degree >= max(50, p99)) | `_bfs` / `_dfs` in `serve.py` |
