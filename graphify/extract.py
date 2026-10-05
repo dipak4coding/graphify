@@ -6655,6 +6655,18 @@ def extract(
             _o = _out_path()
             _o = _o if _o.is_absolute() else Path(root) / _o
             _o.mkdir(parents=True, exist_ok=True)
+            def _error_line_text(_root, _rel, _line):
+                """First failing source line, so the offending construct is visible."""
+                if not _line:
+                    return ""
+                try:
+                    with open(Path(_root) / _rel, encoding="utf-8", errors="replace") as _fh:
+                        for _n, _t in enumerate(_fh, 1):
+                            if _n == _line:
+                                return "  >> " + _t.strip()[:160]
+                except OSError:
+                    pass
+                return ""
             _by_ext: dict[str, int] = {}
             for _f in _syntax_error_files:
                 _ext = os.path.splitext(_f[0])[1].lower() or "(none)"
@@ -6662,7 +6674,8 @@ def extract(
             (_o / "syntax_errors.txt").write_text(
                 "# files tree-sitter reported syntax errors for\n"
                 "# by extension: " + ", ".join(f"{k}={v}" for k, v in sorted(_by_ext.items())) + "\n"
-                + "\n".join(_describe_syntax_error(*f) for f in _syntax_error_files) + "\n",
+                + "\n".join(_describe_syntax_error(*f) + _error_line_text(root, f[0], f[1])
+                             for f in _syntax_error_files) + "\n",
                 encoding="utf-8",
             )
             print(f"  syntax-error list ({', '.join(f'{k}: {v}' for k, v in sorted(_by_ext.items()))}): "

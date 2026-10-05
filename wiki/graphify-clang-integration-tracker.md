@@ -141,3 +141,11 @@ Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef n
 | `graphify affected` | `--depth N` | default 2 |
 | Output size | `--budget N` / `token_budget` | default 2000 tokens; more hops need a bigger budget |
 | Hubs | not expanded through unless they are a start node (degree >= max(50, p99)) | `_bfs` / `_dfs` in `serve.py` |
+
+## 12. Syntax errors, md files, ignore (asked 2026-10-05)
+
+| Observation | Meaning / action |
+|---|---|
+| Tree-sitter syntax errors: .c=74, .h=140 | expected for embedded C (no preprocessor, compiler extensions); `syntax_errors.txt` now also shows the failing source line (`>> ...`) |
+| Clang runs after tree-sitter, not instead | tree-sitter pass still runs on every file; in `clang` mode its C symbols are replaced afterwards (speed-up option: skip tree-sitter for C files in clang mode: TODO, ask user) |
+| `.md` files are extracted | `update` adds docs that have an AST extractor (markdown) to the code list; exclude via `.graphifyignore` |
