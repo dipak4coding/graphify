@@ -149,3 +149,11 @@ Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef n
 | Tree-sitter syntax errors: .c=74, .h=140 | expected for embedded C (no preprocessor, compiler extensions); `syntax_errors.txt` now also shows the failing source line (`>> ...`) |
 | Clang runs after tree-sitter, not instead | tree-sitter pass still runs on every file; in `clang` mode its C symbols are replaced afterwards (speed-up option: skip tree-sitter for C files in clang mode: TODO, ask user) |
 | `.md` files are extracted | `update` adds docs that have an AST extractor (markdown) to the code list; exclude via `.graphifyignore` |
+
+## 13. File-level connections (reported 2026-10-05)
+
+| Observation | Cause | Fix |
+|---|---|---|
+| KKU `.c`/`.h` not connected to other modules; many headers floating | tree-sitter resolves `#include "x.h"` only next to the including file (no `-I`), so cross-folder includes become dead placeholders | clang pass now emits file -> file `imports` edges from `tu.get_includes()` (real `-I` resolution); `metadata.resolved_by=clang` |
+| `ext_*` header nodes on kku.c | tree-sitter placeholder for includes it could not resolve | `extractor=clang`: tree-sitter `imports` of every includer clang saw are replaced; orphaned `ext_*` nodes removed. `both`: clang edges added, tree-sitter ones kept |
+| Headers outside the scan root | no file node exists | edge skipped; scan the parent folder or accept |

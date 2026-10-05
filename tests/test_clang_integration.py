@@ -230,3 +230,27 @@ def test_cli_query_depth_flag(toy, monkeypatch, capsys):
                                           "--graph", str(toy / "graphify-out" / "graph.json")])
         cli.dispatch_command("query")
         assert f"depth={depth}" in capsys.readouterr().out
+
+
+def _include_project(tmp_path, extractor):
+    from graphify.extractors import clang_c
+    (tmp_path / "inc").mkdir()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "inc" / "hw.h").write_text("extern int Hw_Val;\n", encoding="utf-8")
+    (tmp_path / "src" / "a.c").write_text('#include "hw.h"\nint Hw_Val;\nint A_Fn(void){return Hw_Val;}\n', encoding="utf-8")
+    (tmp_path / "graphify-clang.json").write_text(
+        json.dumps({"extra_args": [f"-I{(tmp_path / 'inc').as_posix()}"], "extractor": extractor}), encoding="utf-8")
+    clang_c.set_runtime_config()
+    result = extract(sorted(tmp_path.rglob("*.[ch]")), root=tmp_path)
+    return result["nodes"], result["edges"]
+
+
+@pytest.mark.parametrize("mode", ["both", "clang"])
+def test_include_edge_resolved_via_include_path(tmp_path, mode):
+    """tree-sitter resolves includes only next to the file; clang uses -I, so a.c -> inc/hw.h must exist."""
+    nodes, edges = _include_project(tmp_path, mode)
+    ids = {n["source_file"]: n["id"] for n in nodes if n["label"] in ("a.c", "hw.h")}
+    imp = [e for e in edges if e["relation"] == "imports" and e["source"] == ids["src/a.c"] and e["target"] == ids["inc/hw.h"]]
+    assert imp, f"no resolved imports edge in mode {mode}"
+    if mode == "clang":
+        assert not any(str(n["id"]).startswith("ext_") for n in nodes)

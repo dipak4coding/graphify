@@ -363,6 +363,7 @@ class ClangExtractor:
         self.failed_files: list = []
         self.missing_includes: dict = {}  # header -> number of 'file not found' errors
         self.parsed_files: list = []
+        self.includes: dict = {}  # (including rel file, included rel file) -> line
         self._args_src = "?"
         self._pass_pt = {self.K.UNEXPOSED_EXPR, self.K.PAREN_EXPR, self.K.CSTYLE_CAST_EXPR,
                          self.K.UNARY_OPERATOR, self.K.CXX_UNARY_EXPR}
@@ -914,6 +915,15 @@ class ClangExtractor:
             _warn_once(f"diag:{path}", f"{path.name}: {errors} clang error(s) "
                                        f"(first: {info['error_samples'][0]}); results may be partial. "
                                        f"Re-run with --clang-debug for all of them.")
+        try:  # real include resolution (honours -I), the part tree-sitter cannot do
+            for inc in tu.get_includes():
+                if inc.source is None or inc.include is None:
+                    continue
+                a, b = self._rel(inc.source.name), self._rel(inc.include.name)
+                if a is not None and b is not None and a != b:
+                    self.includes.setdefault((a.as_posix(), b.as_posix()), inc.location.line)
+        except Exception as exc:  # pragma: no cover - libclang quirk
+            LOG.debug("get_includes failed for %s: %s", rel, exc)
         self.parsed_files.append(rel)
         return tu
 
@@ -1085,6 +1095,50 @@ def _replace_treesitter(all_nodes, all_edges, nodes, edges, covered: set, root: 
             "treesitter_nodes_removed": len(removed_ids), "treesitter_edges_removed": dropped_edges}
 
 
+def _file_id_map(all_nodes, root: Path) -> dict:
+    """rel source_file -> id of its tree-sitter file node (ids may still be absolute-path based here)."""
+    out = {}
+    for n in all_nodes:
+        if not _is_file_node(n):
+            continue
+        sf = str(n.get("source_file") or "")
+        try:
+            rel = Path(sf).resolve().relative_to(root).as_posix() if Path(sf).is_absolute() else sf.replace("\\", "/")
+        except (ValueError, OSError):
+            rel = sf.replace("\\", "/")
+        out.setdefault(rel, n["id"])
+    return out
+
+
+def _clang_import_edges(ex, all_nodes, all_edges, root: Path, replace: bool) -> int:
+    """File -> file `imports` edges from clang's include resolution (same -I as the real build).
+    replace=True (extractor=clang): tree-sitter `imports` edges of every file clang saw as an
+    includer are dropped first (they only resolved includes next to the file), and tree-sitter
+    placeholder `ext_*` nodes left without any edge are removed."""
+    if not ex.includes:
+        return 0
+    fmap = _file_id_map(all_nodes, root)
+    if replace:
+        includers = {fmap[a] for a, _ in ex.includes if a in fmap}
+        all_edges[:] = [e for e in all_edges if not (e.get("relation") == "imports" and e.get("source") in includers)]
+        used = {e.get("source") for e in all_edges} | {e.get("target") for e in all_edges}
+        all_nodes[:] = [n for n in all_nodes if not (str(n.get("id", "")).startswith("ext_") and n["id"] not in used)]
+    seen = {(e.get("source"), e.get("target"), e.get("relation")) for e in all_edges}
+    added = 0
+    for (a, b), line in sorted(ex.includes.items()):
+        if a not in fmap or b not in fmap:
+            continue
+        key = (fmap[a], fmap[b], "imports")
+        if key in seen:
+            continue
+        seen.add(key)
+        all_edges.append({"source": fmap[a], "target": fmap[b], "relation": "imports", "context": "import",
+                          "confidence": "EXTRACTED", "source_file": a, "source_location": f"L{line}",
+                          "weight": 1.0, "metadata": {"resolved_by": "clang"}})
+        added += 1
+    return added
+
+
 def _write_report(root: Path, cfg: ClangConfig, ex, stats: dict, c_files: list) -> Path | None:
     try:
         from graphify.paths import out_path
@@ -1169,8 +1223,11 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
                 _warn_once("clangfallback", "extractor = clang: these C files could not be parsed and keep "
                                             f"their tree-sitter symbols: {', '.join(ex.failed_files[:10])}")
             stats.update(_replace_treesitter(all_nodes, all_edges, nodes, edges, covered, root))
+            stats["imports_added"] = _clang_import_edges(ex, all_nodes, all_edges, root, replace=True)
         else:
             stats.update(_merge_into(all_nodes, all_edges, nodes, edges, cfg, ex))
+            stats["imports_added"] = _clang_import_edges(ex, all_nodes, all_edges, root, replace=False)
+        LOG.info("clang include edges added: %d (%d include pairs seen)", stats["imports_added"], len(ex.includes))
         stats["files"] = ex.files_parsed
         stats["ptr_to_rom"] = len(ex.ptr_to_rom)
 
@@ -1204,7 +1261,7 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
         f"[graphify] clang pass ({cfg.extractor}): {stats.get('files', 0)} C file(s), "
         f"+{stats.get('nodes_added', 0)} nodes ({stats.get('nodes_enriched', 0)} enriched)"
         + (f", -{stats.get('treesitter_nodes_removed', 0)} tree-sitter nodes" if cfg.extractor == "clang" else "")
-        + f", +{stats.get('edges_added', 0)} edges"
+        + f", +{stats.get('edges_added', 0)} edges, +{stats.get('imports_added', 0)} include edges"
         + (f", A2L matched {a2l.get('characteristics', 0)} characteristics / "
            f"{a2l.get('measurements', 0)} measurements" if a2l else "")
         + (f" | debug log: {log_path}, report: {report}" if log_path else ""),
