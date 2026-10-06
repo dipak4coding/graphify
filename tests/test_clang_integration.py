@@ -323,3 +323,20 @@ def test_every_included_header_gets_a_file_node_even_outside_scan(tmp_path, mode
     assert all(e["source"] in ids and e["target"] in ids for e in edges if e["relation"] == "contains")
     assert not any("tmp" in n["id"] and "outer" in n["id"] for n in nodes), "machine path leaked into ids"
 
+
+
+def test_declaration_merges_into_existing_definition_node():
+    """Header declaration (clang) + definition only known under another id (tree-sitter): one node, edges follow."""
+    from types import SimpleNamespace
+    from graphify.extractors.clang_c import _unify_declarations
+    all_nodes = [{"id": "vwh_vwh_flagrdlock", "label": "Vwh_FlagRdLock()", "file_type": "code", "source_file": "vwh/vwh.c"}]
+    nodes = [{"id": "ext_src_vwh_vwh_flagrdlock", "label": "Vwh_FlagRdLock()", "type": "function", "source_file": "../x/vwh.h"},
+             {"id": "u", "label": "U()", "type": "function", "source_file": "u.c"}]
+    edges = [{"source": "u", "target": "ext_src_vwh_vwh_flagrdlock", "relation": "calls"}]
+    ex = SimpleNamespace(final_decl_only={"ext_src_vwh_vwh_flagrdlock"})
+    assert _unify_declarations(ex, nodes, edges, all_nodes) == 1
+    assert [n["id"] for n in nodes] == ["u"] and edges[0]["target"] == "vwh_vwh_flagrdlock"
+    # ambiguous (two definitions) stays untouched
+    all_nodes.append({"id": "vwh2_flagrdlock", "label": "Vwh_FlagRdLock()", "file_type": "code", "source_file": "vwh2/vwh.c"})
+    nodes2 = [{"id": "d", "label": "Vwh_FlagRdLock()", "type": "function", "source_file": "../x/vwh.h"}]
+    assert _unify_declarations(SimpleNamespace(final_decl_only={"d"}), nodes2, [], all_nodes) == 0

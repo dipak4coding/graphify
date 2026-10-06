@@ -365,6 +365,7 @@ class ClangExtractor:
         self.missing_includes: dict = {}  # header -> number of 'file not found' errors
         self.parsed_files: list = []
         self.system_dirs: set = set()
+        self.final_decl_only: set = set()
         self.skipped_extern_decls = 0  # extern declarations seen in headers and not turned into nodes
         self.includes: dict = {}  # (including rel file, included rel file) -> line
         self._args_src = "?"
@@ -1057,6 +1058,9 @@ class ClangExtractor:
                 merged["source_location"] = f"L{lines[0]}"
             edges[(src, tgt, "reads_writes_var")] = merged
 
+        self.final_decl_only = {nid for nid in self.decl_only if nid in self.nodes}
+        for nid in self.final_decl_only:
+            self.nodes[nid]["metadata"]["declaration_only"] = True
         return list(self.nodes.values()), list(edges.values())
 
 
@@ -1130,6 +1134,35 @@ def _replace_treesitter(all_nodes, all_edges, nodes, edges, covered: set, root: 
                 e_added += 1
     return {"nodes_added": len(nodes), "nodes_enriched": 0, "edges_added": e_added,
             "treesitter_nodes_removed": len(removed_ids), "treesitter_edges_removed": dropped_edges}
+
+
+def _unify_declarations(ex, nodes, edges, all_nodes, covered=None) -> int:
+    """A header declaration (decl-only clang node) whose definition is a node tree-sitter (or an earlier
+    pass) already made under a different id is the SAME symbol: point the declaration's edges at that node and
+    drop the duplicate. Only when the label matches exactly one existing symbol node. ``covered`` (clang mode):
+    never merge into a node that is about to be replaced."""
+    clang_ids = {n["id"] for n in nodes}
+    idx: dict = {}
+    for n in all_nodes:
+        if n["id"] in clang_ids or _is_file_node(n) or n.get("file_type") != "code" or not n.get("source_file"):
+            continue
+        if covered is not None and str(n["source_file"]).replace("\\", "/") in covered:
+            continue
+        idx.setdefault(n.get("label"), []).append(n["id"])
+    remap = {}
+    for n in nodes:
+        if n["id"] in ex.final_decl_only:
+            hits = idx.get(n["label"], [])
+            if len(hits) == 1:
+                remap[n["id"]] = hits[0]
+    if not remap:
+        return 0
+    nodes[:] = [n for n in nodes if n["id"] not in remap]
+    for e in edges:
+        e["source"] = remap.get(e["source"], e["source"])
+        e["target"] = remap.get(e["target"], e["target"])
+    edges[:] = [e for e in edges if e["source"] != e["target"]]
+    return len(remap)
 
 
 def _file_id_map(all_nodes, root: Path) -> dict:
@@ -1282,14 +1315,21 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
             if cfg.extractor == "clang":
                 covered = set(ex.parsed_files) | {n["source_file"] for n in nodes
                                                    if n["type"] in ("function", "variable") and n.get("source_file")}
+                stats["declarations_unified"] = _unify_declarations(ex, nodes, edges, all_nodes, covered)
                 if ex.failed_files:
                     _warn_once("clangfallback", "extractor = clang: these C files could not be parsed and keep "
                                                 f"their tree-sitter symbols: {', '.join(ex.failed_files[:10])}")
                 stats.update(_replace_treesitter(all_nodes, all_edges, nodes, edges, covered, root))
                 stats["imports_added"] = _clang_import_edges(ex, all_nodes, all_edges, root, replace=True)
             else:
+                stats["declarations_unified"] = _unify_declarations(ex, nodes, edges, all_nodes)
                 stats.update(_merge_into(all_nodes, all_edges, nodes, edges, cfg, ex, root))
                 stats["imports_added"] = _clang_import_edges(ex, all_nodes, all_edges, root, replace=False)
+            LOG.info("declarations merged into existing definitions: %d", stats.get("declarations_unified", 0))
+            outside = sorted({f for pair in ex.includes for f in pair if Path(f).is_absolute()})
+            if outside:
+                LOG.info("project files OUTSIDE the scan root (%d, e.g. %s): their symbols get ext_* ids; scan a higher folder "
+                         "if they should be normal nodes", len(outside), outside[:5])
             LOG.info("clang added %d header/file node(s) and %d include edge(s) (%d include pairs seen)",
                      stats["file_nodes_added"], stats["imports_added"], len(ex.includes))
         stats["files"] = ex.files_parsed

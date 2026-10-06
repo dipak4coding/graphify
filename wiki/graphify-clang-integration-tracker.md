@@ -193,3 +193,10 @@ Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef n
 | Only headers' symbols that kku uses had `contains`; everything else a header declares was missing | the user wants the old standalone-graph behaviour: a header contains ALL it declares |
 | Fix | config `header_declarations` (default `true`): top-level `extern` variables and function prototypes of every non-system header become nodes (decl-only) with `file --contains--> symbol`. A declaration with exactly one definition in the scan is merged into the definition (so it then belongs to the defining `.c`). `false` = previous behaviour (only referenced/defined symbols) |
 | Cost | more nodes (every declaration of every included header); use `graphify focus` for module views |
+
+## 19. Duplicate nodes `ext_*` vs normal (reported 2026-10-06)
+
+| Observation | Cause (inferred; needs the user's log to confirm) | Fix |
+|---|---|---|
+| Same symbol twice: normal node + orphan `ext_src_vwh_vwh_flagrdlock` | header declaration (clang, decl-only) not merged with the definition when the definition node exists under another id (tree-sitter-made, or defined in a file clang did not parse) | `_unify_declarations`: a decl-only clang node whose label matches exactly one existing symbol node is merged into it (edges re-pointed). Survivors carry `metadata.declaration_only=true`. Ambiguous (several definitions) are left alone |
+| `ext_` ids at all | header lies outside the scan root, or its path resolves differently | debug log lists up to 5 such files (`project files OUTSIDE the scan root`); scan a higher folder if they belong to the project |
