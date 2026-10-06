@@ -1044,8 +1044,6 @@ def _replace_treesitter(all_nodes, all_edges, nodes, edges, covered: set, root: 
     files clang parsed, then add clang's. File nodes and file->file edges (imports) stay: they are
     the structure clang does not provide. Files clang could NOT parse are not in ``covered`` and
     keep their tree-sitter symbols (per-file fallback)."""
-    from graphify.extract import _file_node_id
-
     def _rel(sf: str) -> str:  # tree-sitter source_file may still be absolute at this point
         try:
             return Path(sf).resolve().relative_to(root).as_posix() if Path(sf).is_absolute() else sf.replace("\\", "/")
@@ -1078,11 +1076,11 @@ def _replace_treesitter(all_nodes, all_edges, nodes, edges, covered: set, root: 
         seen.add(key)
         all_edges.append(edge)
         e_added += 1
+    fmap = _file_id_map(all_nodes, root)
     for node in nodes:  # file --contains--> function/variable (tree-sitter's contains edges were dropped)
         if node["type"] not in ("function", "variable") or not node.get("source_file"):
             continue
-        sf = Path(node["source_file"])
-        file_id = _file_node_id(sf) if not sf.is_absolute() else None
+        file_id = fmap.get(str(node["source_file"]).replace("\\", "/"))
         if file_id and file_id in existing and file_id != node["id"]:
             key = (file_id, node["id"], "contains")
             if key not in seen:
@@ -1225,7 +1223,7 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
             stats.update(_replace_treesitter(all_nodes, all_edges, nodes, edges, covered, root))
             stats["imports_added"] = _clang_import_edges(ex, all_nodes, all_edges, root, replace=True)
         else:
-            stats.update(_merge_into(all_nodes, all_edges, nodes, edges, cfg, ex))
+            stats.update(_merge_into(all_nodes, all_edges, nodes, edges, cfg, ex, root))
             stats["imports_added"] = _clang_import_edges(ex, all_nodes, all_edges, root, replace=False)
         LOG.info("clang include edges added: %d (%d include pairs seen)", stats["imports_added"], len(ex.includes))
         stats["files"] = ex.files_parsed
@@ -1270,8 +1268,7 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
     return stats
 
 
-def _merge_into(all_nodes, all_edges, nodes, edges, cfg: ClangConfig, ex: ClangExtractor) -> dict:
-    from graphify.extract import _file_node_id
+def _merge_into(all_nodes, all_edges, nodes, edges, cfg: ClangConfig, ex: ClangExtractor, root: Path) -> dict:
 
     existing = {n["id"]: n for n in all_nodes if n.get("id")}
     scope = [s.lower() for s in cfg.scope]
@@ -1309,12 +1306,12 @@ def _merge_into(all_nodes, all_edges, nodes, edges, cfg: ClangConfig, ex: ClangE
         all_edges.append(edge)
         e_added += 1
 
-    # file --contains--> variable (functions already have it from tree-sitter)
+    # file --contains--> function/variable (deduped against tree-sitter's own contains edges)
+    fmap = _file_id_map(all_nodes, root)
     for node in nodes:
-        if node["type"] != "variable" or node["id"] not in kept_ids or not node.get("source_file"):
+        if node["type"] not in ("function", "variable") or node["id"] not in kept_ids or not node.get("source_file"):
             continue
-        sf = Path(node["source_file"])
-        file_id = _file_node_id(sf) if not sf.is_absolute() else None
+        file_id = fmap.get(str(node["source_file"]).replace("\\", "/"))
         if file_id and file_id in kept_ids and file_id != node["id"]:
             key = (file_id, node["id"], "contains")
             if key not in seen:

@@ -254,3 +254,12 @@ def test_include_edge_resolved_via_include_path(tmp_path, mode):
     assert imp, f"no resolved imports edge in mode {mode}"
     if mode == "clang":
         assert not any(str(n["id"]).startswith("ext_") for n in nodes)
+
+
+@pytest.mark.parametrize("mode", ["both", "clang"])
+def test_contains_edges_for_functions_and_variables(toy, mode):
+    nodes, edges = _extract_with(toy, mode)
+    for sym, f in (("Kku_BerKuehlAnf()", "kku.c"), ("Kku_Anf", "kku.h"), ("Kku_Send()", "kku_out.c")):
+        sid = _by_label(nodes, sym)["id"]
+        fid = _by_label(nodes, f)["id"]
+        assert any(e["relation"] == "contains" and e["source"] == fid and e["target"] == sid for e in edges), (mode, sym)

@@ -164,3 +164,9 @@ Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef n
 |---|---|
 | New `graphify focus "<path or label>" [--depth N] [--max-degree N] [--out DIR]` | DONE: cuts a module subgraph (default 1 hop, hubs not expanded) to `graphify-out/focus/<name>/graph.json`, prints inside/outside edge counts by relation, ext_* count, file nodes with no `imports` edge |
 | User still sees unrelated nodes and kku files unconnected after include fix | OPEN: needs `focus` output + `clang_debug.log` line `clang include edges added` from the user's run |
+
+## 15. Missing `contains` edges (reported 2026-10-06)
+
+| Cause | Fix |
+|---|---|
+| clang pass looked up file nodes by a derived id (`parent_stem`), but tree-sitter file ids are still absolute-path based at hook time: lookup failed silently. `clang` mode dropped tree-sitter's `contains` edges and added almost none back; `both` mode never added them for variables | file nodes are now found by `source_file` (`_file_id_map`); contains edges added for functions and variables in both modes. Test `test_contains_edges_for_functions_and_variables` |
