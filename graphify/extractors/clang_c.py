@@ -363,6 +363,7 @@ class ClangExtractor:
         self.failed_files: list = []
         self.missing_includes: dict = {}  # header -> number of 'file not found' errors
         self.parsed_files: list = []
+        self.skipped_extern_decls = 0  # extern declarations seen in headers and not turned into nodes
         self.includes: dict = {}  # (including rel file, included rel file) -> line
         self._args_src = "?"
         self._pass_pt = {self.K.UNEXPOSED_EXPR, self.K.PAREN_EXPR, self.K.CSTYLE_CAST_EXPR,
@@ -813,7 +814,11 @@ class ClangExtractor:
                 var_id = self._global_var(ref, sfile)
                 self.add_edge(fn_id, var_id, "reads_var", sfile, cursor.location.line)
 
-        if kind == K.VAR_DECL and fn_id is None and self._is_global_var(cursor):
+        if kind == K.VAR_DECL and fn_id is None and self._is_global_var(cursor) and not cursor.is_definition():
+            # `extern T x;` from an included header: not a node by itself. It becomes one only when some
+            # function reads/writes it (_global_var), otherwise every header would add orphan variables.
+            self.skipped_extern_decls += 1
+        elif kind == K.VAR_DECL and fn_id is None and self._is_global_var(cursor):
             var_id = self._global_var(cursor, sfile)
             # keep the variable linked to its file like Graphify links functions: file --contains--> var
             self._pending_contains.append((cursor, var_id))
@@ -961,6 +966,7 @@ class ClangExtractor:
             self.file_info[rel]["edges_added"] = len(self.edges) - e0
             LOG.info("walked %s: +%d nodes, +%d edges (before dedup)", rel,
                      len(self.nodes) - n0, len(self.edges) - e0)
+        LOG.info("extern declarations in headers not turned into nodes (no orphans): %d", self.skipped_extern_decls)
         if self.missing_includes:
             top = sorted(self.missing_includes.items(), key=lambda kv: -kv[1])[:15]
             LOG.warning("PREPROCESSING: %d distinct header(s) not found - add their folders as -I in "

@@ -269,3 +269,12 @@ def test_contains_edges_for_functions_and_variables(toy, mode):
         sid = _by_label(nodes, sym)["id"]
         fid = _by_label(nodes, f)["id"]
         assert any(e["relation"] == "contains" and e["source"] == fid and e["target"] == sid for e in edges), (mode, sym)
+
+
+def test_unused_extern_declarations_in_headers_do_not_become_nodes(toy):
+    (toy / "other.h").write_text("extern int Other_Unused;\nextern int Other_Used;\n", encoding="utf-8")
+    (toy / "user.c").write_text('#include "other.h"\nint User_Fn(void){return Other_Used;}\n', encoding="utf-8")
+    nodes, edges = _extract_with(toy, "clang")
+    labels = {n["label"] for n in nodes}
+    assert "Other_Unused" not in labels, "unreferenced extern from a header must not create an orphan"
+    assert "Other_Used" in labels and _edge(nodes, edges, "User_Fn()", "reads_var", "Other_Used")

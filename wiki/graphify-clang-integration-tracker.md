@@ -170,3 +170,10 @@ Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef n
 | Cause | Fix |
 |---|---|
 | clang pass looked up file nodes by a derived id (`parent_stem`), but tree-sitter file ids are still absolute-path based at hook time: lookup failed silently. `clang` mode dropped tree-sitter's `contains` edges and added almost none back; `both` mode never added them for variables | file nodes are now found by `source_file` (`_file_id_map`); contains edges added for functions and variables in both modes. Test `test_contains_edges_for_functions_and_variables` |
+
+## 16. Orphan nodes from headers (reported 2026-10-06)
+
+| Cause | Fix |
+|---|---|
+| Clang walks every top-level declaration of every included (non-system) header; each `extern T x;` became a variable node, even when nothing used it -> large orphan clouds around a module | top-level non-definition variable declarations are skipped; a variable becomes a node only when it is defined in a parsed file or referenced by a function (read/write). Count in debug log: `extern declarations in headers not turned into nodes`. Test `test_unused_extern_declarations_in_headers_do_not_become_nodes` |
+| Still open | tree-sitter nodes for the same headers (`both` mode, or headers outside clang's reach); function prototypes are only added when called |
