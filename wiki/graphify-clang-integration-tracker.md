@@ -157,3 +157,10 @@ Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef n
 | KKU `.c`/`.h` not connected to other modules; many headers floating | tree-sitter resolves `#include "x.h"` only next to the including file (no `-I`), so cross-folder includes become dead placeholders | clang pass now emits file -> file `imports` edges from `tu.get_includes()` (real `-I` resolution); `metadata.resolved_by=clang` |
 | `ext_*` header nodes on kku.c | tree-sitter placeholder for includes it could not resolve | `extractor=clang`: tree-sitter `imports` of every includer clang saw are replaced; orphaned `ext_*` nodes removed. `both`: clang edges added, tree-sitter ones kept |
 | Headers outside the scan root | no file node exists | edge skipped; scan the parent folder or accept |
+
+## 14. Module view and connectivity check (asked 2026-10-06)
+
+| Topic | Status |
+|---|---|
+| New `graphify focus "<path or label>" [--depth N] [--max-degree N] [--out DIR]` | DONE: cuts a module subgraph (default 1 hop, hubs not expanded) to `graphify-out/focus/<name>/graph.json`, prints inside/outside edge counts by relation, ext_* count, file nodes with no `imports` edge |
+| User still sees unrelated nodes and kku files unconnected after include fix | OPEN: needs `focus` output + `clang_debug.log` line `clang include edges added` from the user's run |

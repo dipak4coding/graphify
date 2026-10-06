@@ -1127,6 +1127,9 @@ def dispatch_command(cmd: str) -> None:
             _rest = [a for k, a in enumerate(_argv) if k not in (_i, _i + 1)]
             sys.exit(check_file(Path(_rest[0]) if _rest else Path("."), _file))
         sys.exit(check_setup(Path(sys.argv[2]) if len(sys.argv) > 2 else None))
+    if cmd == "focus":
+        from graphify.focus import run_focus
+        sys.exit(run_focus(sys.argv[2:]))
     if cmd in ("extract", "update", "clang-check"):
         _consume_clang_flags()
     if cmd == "provider":
