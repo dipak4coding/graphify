@@ -258,7 +258,13 @@ def test_include_edge_resolved_via_include_path(tmp_path, mode):
 
 @pytest.mark.parametrize("mode", ["both", "clang"])
 def test_contains_edges_for_functions_and_variables(toy, mode):
-    nodes, edges = _extract_with(toy, mode)
+    from graphify.extractors import clang_c
+    clang_c.set_runtime_config(extractor=mode)
+    try:  # headers must be in the scan too (as in a real run) so they have file nodes
+        result = extract(sorted(toy.glob("*.[ch]")), root=toy)
+    finally:
+        clang_c.set_runtime_config()
+    nodes, edges = result["nodes"], result["edges"]
     for sym, f in (("Kku_BerKuehlAnf()", "kku.c"), ("Kku_Anf", "kku.h"), ("Kku_Send()", "kku_out.c")):
         sid = _by_label(nodes, sym)["id"]
         fid = _by_label(nodes, f)["id"]
