@@ -278,3 +278,28 @@ def test_unused_extern_declarations_in_headers_do_not_become_nodes(toy):
     labels = {n["label"] for n in nodes}
     assert "Other_Unused" not in labels, "unreferenced extern from a header must not create an orphan"
     assert "Other_Used" in labels and _edge(nodes, edges, "User_Fn()", "reads_var", "Other_Used")
+
+
+@pytest.mark.parametrize("mode", ["both", "clang"])
+def test_every_included_header_gets_a_file_node_even_outside_scan(tmp_path, mode):
+    """Headers that were not in the scan (or lie outside the root) still get a file node + contains + imports."""
+    from graphify.extractors import clang_c
+    proj, outer = tmp_path / "proj", tmp_path / "outer"
+    proj.mkdir(); outer.mkdir()
+    (outer / "hw.h").write_text("extern int Hw_Val;\nint Hw_Inline(void){return 3;}\n", encoding="utf-8")
+    (proj / "a.c").write_text('#include "hw.h"\nint A_Fn(void){return Hw_Val + Hw_Inline();}\n', encoding="utf-8")
+    (proj / "graphify-clang.json").write_text(
+        json.dumps({"extra_args": [f"-I{outer.as_posix()}"], "extractor": mode}), encoding="utf-8")
+    clang_c.set_runtime_config()
+    result = extract([proj / "a.c"], root=proj)  # header NOT in the scan list
+    nodes, edges = result["nodes"], result["edges"]
+    hdr = next(n for n in nodes if n["label"] == "hw.h")
+    a = next(n for n in nodes if n["label"] == "a.c")
+    inl = _by_label(nodes, "Hw_Inline()")
+    var = _by_label(nodes, "Hw_Val")
+    for sym in (inl, var):
+        assert any(e["relation"] == "contains" and e["source"] == hdr["id"] and e["target"] == sym["id"] for e in edges), sym["label"]
+    assert any(e["relation"] == "imports" and e["source"] == a["id"] and e["target"] == hdr["id"] for e in edges)
+    ids = {n["id"] for n in nodes}
+    assert all(e["source"] in ids and e["target"] in ids for e in edges if e["relation"] == "contains")
+    assert not any("tmp" in n["id"] and "outer" in n["id"] for n in nodes), "machine path leaked into ids"

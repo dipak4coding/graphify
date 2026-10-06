@@ -177,3 +177,11 @@ Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef n
 |---|---|
 | Clang walks every top-level declaration of every included (non-system) header; each `extern T x;` became a variable node, even when nothing used it -> large orphan clouds around a module | top-level non-definition variable declarations are skipped; a variable becomes a node only when it is defined in a parsed file or referenced by a function (read/write). Count in debug log: `extern declarations in headers not turned into nodes`. Test `test_unused_extern_declarations_in_headers_do_not_become_nodes` |
 | Still open | tree-sitter nodes for the same headers (`both` mode, or headers outside clang's reach); function prototypes are only added when called |
+
+## 17. One file node per included header (reported 2026-10-06)
+
+| Observation | Cause | Fix |
+|---|---|---|
+| Symbols from included headers had no `contains` edge to their header; old standalone clang graph had a node per header | clang pass could only link to file nodes tree-sitter had made; headers outside the scan root or not in the scan had none | `_ensure_file_nodes`: every non-system file clang saw (every include, every symbol source) gets a file node if missing, in or out of the scan root; `contains` and `imports` edges then attach. Debug log: `clang added N header/file node(s)...`; summary line `+N file nodes` |
+| Symbol ids contained the machine path for out-of-root headers | `stem()` used the absolute path | out-of-root files get portable `ext_<dir>_<file>` ids |
+| System headers | not wanted | path heuristic (`/usr/include`, mingw, Windows Kits, Program Files, `-isystem` dirs). Add markers if your compiler lives elsewhere |

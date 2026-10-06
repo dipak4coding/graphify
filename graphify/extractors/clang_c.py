@@ -363,6 +363,7 @@ class ClangExtractor:
         self.failed_files: list = []
         self.missing_includes: dict = {}  # header -> number of 'file not found' errors
         self.parsed_files: list = []
+        self.system_dirs: set = set()
         self.skipped_extern_decls = 0  # extern declarations seen in headers and not turned into nodes
         self.includes: dict = {}  # (including rel file, included rel file) -> line
         self._args_src = "?"
@@ -382,7 +383,20 @@ class ClangExtractor:
 
     def stem(self, path: str) -> str:
         rel = self._rel(path)
-        return _file_stem(rel if rel is not None else Path(path))
+        if rel is None:  # outside the scan root: portable id (no machine path), like tree-sitter's ext_* ids
+            p = Path(path)
+            return _file_stem(Path("ext") / p.parent.name / p.name)
+        return _file_stem(rel)
+
+    _SYSTEM_MARKERS = ("/usr/include", "/usr/lib/", "/lib/clang/", "/lib/gcc/", "mingw", "windows kits",
+                       "program files", "/msvc/", "/vc/tools/", "/include/c++/")
+
+    def looks_system(self, path) -> bool:
+        """Heuristic: compiler / OS headers are not part of the project graph (path based; also -isystem dirs)."""
+        p = str(path).replace("\\", "/").lower()
+        if any(m in p for m in self._SYSTEM_MARKERS):
+            return True
+        return any(p.startswith(d) for d in self.system_dirs)
 
     def sf(self, path: str) -> str:
         rel = self._rel(path)
@@ -886,6 +900,10 @@ class ClangExtractor:
         index = self.ci.Index.create()
         rel = self.sf(str(path))
         args = self._args_for(path)
+        for i, a in enumerate(args):
+            d = a[len("-isystem"):] if a.startswith("-isystem") and len(a) > 8 else (args[i + 1] if a == "-isystem" and i + 1 < len(args) else "")
+            if d:
+                self.system_dirs.add(str(d).replace("\\", "/").lower().rstrip("/") + "/")
         info = {"args_source": self._args_src, "args": args, "errors": 0, "warnings": 0, "error_samples": []}
         self.file_info[rel] = info
         LOG.debug("parse %s | args from %s | %d arg(s)", rel, self._args_src, len(args))
@@ -924,9 +942,11 @@ class ClangExtractor:
             for inc in tu.get_includes():
                 if inc.source is None or inc.include is None:
                     continue
-                a, b = self._rel(inc.source.name), self._rel(inc.include.name)
-                if a is not None and b is not None and a != b:
-                    self.includes.setdefault((a.as_posix(), b.as_posix()), inc.location.line)
+                if self.looks_system(inc.source.name) or self.looks_system(inc.include.name):
+                    continue
+                a, b = self.sf(inc.source.name), self.sf(inc.include.name)
+                if a != b:
+                    self.includes.setdefault((a, b), inc.location.line)
         except Exception as exc:  # pragma: no cover - libclang quirk
             LOG.debug("get_includes failed for %s: %s", rel, exc)
         self.parsed_files.append(rel)
@@ -1114,6 +1134,30 @@ def _file_id_map(all_nodes, root: Path) -> dict:
     return out
 
 
+def _ensure_file_nodes(ex, nodes, all_nodes, root: Path) -> int:
+    """One file node per project file clang saw (every included header, in or out of the scan root) so
+    header symbols get a `contains` edge and include edges have both ends. Same id scheme tree-sitter
+    uses for file nodes (path based; extract()'s id pass canonicalises it)."""
+    have = set(_file_id_map(all_nodes, root))
+    wanted = {f for pair in ex.includes for f in pair}
+    wanted |= {str(n["source_file"]).replace("\\", "/") for n in nodes
+               if n["type"] in ("function", "variable") and n.get("source_file")}
+    added = 0
+    existing_ids = {n.get("id") for n in all_nodes}
+    for sf in sorted(wanted - have):
+        if ex.looks_system(sf) or not sf.lower().endswith((".h", ".c", ".hpp", ".cpp", ".inc")):
+            continue
+        absolute = Path(sf) if Path(sf).is_absolute() else (root / sf)
+        nid = make_id(str(absolute))
+        if nid in existing_ids:
+            continue
+        all_nodes.append({"id": nid, "label": Path(sf).name, "file_type": "code", "source_file": sf,
+                          "source_location": "L1", "metadata": {"source_extractor": "clang", "file_node_created_by": "clang"}})
+        existing_ids.add(nid)
+        added += 1
+    return added
+
+
 def _clang_import_edges(ex, all_nodes, all_edges, root: Path, replace: bool) -> int:
     """File -> file `imports` edges from clang's include resolution (same -I as the real build).
     replace=True (extractor=clang): tree-sitter `imports` edges of every file clang saw as an
@@ -1220,18 +1264,21 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
         LOG.info("clang produced %d nodes / %d edges after dedup", len(nodes), len(edges))
         if not ex.files_parsed:
             LOG.error("0 C files parsed: keeping tree-sitter output unchanged")
-        elif cfg.extractor == "clang":
-            covered = set(ex.parsed_files) | {n["source_file"] for n in nodes
-                                               if n["type"] in ("function", "variable") and n.get("source_file")}
-            if ex.failed_files:
-                _warn_once("clangfallback", "extractor = clang: these C files could not be parsed and keep "
-                                            f"their tree-sitter symbols: {', '.join(ex.failed_files[:10])}")
-            stats.update(_replace_treesitter(all_nodes, all_edges, nodes, edges, covered, root))
-            stats["imports_added"] = _clang_import_edges(ex, all_nodes, all_edges, root, replace=True)
         else:
-            stats.update(_merge_into(all_nodes, all_edges, nodes, edges, cfg, ex, root))
-            stats["imports_added"] = _clang_import_edges(ex, all_nodes, all_edges, root, replace=False)
-        LOG.info("clang include edges added: %d (%d include pairs seen)", stats["imports_added"], len(ex.includes))
+            stats["file_nodes_added"] = _ensure_file_nodes(ex, nodes, all_nodes, root)
+            if cfg.extractor == "clang":
+                covered = set(ex.parsed_files) | {n["source_file"] for n in nodes
+                                                   if n["type"] in ("function", "variable") and n.get("source_file")}
+                if ex.failed_files:
+                    _warn_once("clangfallback", "extractor = clang: these C files could not be parsed and keep "
+                                                f"their tree-sitter symbols: {', '.join(ex.failed_files[:10])}")
+                stats.update(_replace_treesitter(all_nodes, all_edges, nodes, edges, covered, root))
+                stats["imports_added"] = _clang_import_edges(ex, all_nodes, all_edges, root, replace=True)
+            else:
+                stats.update(_merge_into(all_nodes, all_edges, nodes, edges, cfg, ex, root))
+                stats["imports_added"] = _clang_import_edges(ex, all_nodes, all_edges, root, replace=False)
+            LOG.info("clang added %d header/file node(s) and %d include edge(s) (%d include pairs seen)",
+                     stats["file_nodes_added"], stats["imports_added"], len(ex.includes))
         stats["files"] = ex.files_parsed
         stats["ptr_to_rom"] = len(ex.ptr_to_rom)
 
