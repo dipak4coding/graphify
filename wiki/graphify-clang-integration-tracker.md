@@ -185,3 +185,11 @@ Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef n
 | Symbols from included headers had no `contains` edge to their header; old standalone clang graph had a node per header | clang pass could only link to file nodes tree-sitter had made; headers outside the scan root or not in the scan had none | `_ensure_file_nodes`: every non-system file clang saw (every include, every symbol source) gets a file node if missing, in or out of the scan root; `contains` and `imports` edges then attach. Debug log: `clang added N header/file node(s)...`; summary line `+N file nodes` |
 | Symbol ids contained the machine path for out-of-root headers | `stem()` used the absolute path | out-of-root files get portable `ext_<dir>_<file>` ids |
 | System headers | not wanted | path heuristic (`/usr/include`, mingw, Windows Kits, Program Files, `-isystem` dirs). Add markers if your compiler lives elsewhere |
+
+## 18. Header declarations (reported 2026-10-06; reverses part of section 16)
+
+| Observation | Decision |
+|---|---|
+| Only headers' symbols that kku uses had `contains`; everything else a header declares was missing | the user wants the old standalone-graph behaviour: a header contains ALL it declares |
+| Fix | config `header_declarations` (default `true`): top-level `extern` variables and function prototypes of every non-system header become nodes (decl-only) with `file --contains--> symbol`. A declaration with exactly one definition in the scan is merged into the definition (so it then belongs to the defining `.c`). `false` = previous behaviour (only referenced/defined symbols) |
+| Cost | more nodes (every declaration of every included header); use `graphify focus` for module views |

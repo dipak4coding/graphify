@@ -271,13 +271,32 @@ def test_contains_edges_for_functions_and_variables(toy, mode):
         assert any(e["relation"] == "contains" and e["source"] == fid and e["target"] == sid for e in edges), (mode, sym)
 
 
-def test_unused_extern_declarations_in_headers_do_not_become_nodes(toy):
-    (toy / "other.h").write_text("extern int Other_Unused;\nextern int Other_Used;\n", encoding="utf-8")
+def _header_decl_project(toy, header_declarations):
+    from graphify.extractors import clang_c
+    (toy / "other.h").write_text("extern int Other_Unused;\nextern int Other_Used;\nint Other_Proto(int x);\n", encoding="utf-8")
     (toy / "user.c").write_text('#include "other.h"\nint User_Fn(void){return Other_Used;}\n', encoding="utf-8")
-    nodes, edges = _extract_with(toy, "clang")
+    cfg = json.loads((toy / "graphify-clang.json").read_text(encoding="utf-8"))
+    cfg.update(extractor="clang", header_declarations=header_declarations)
+    (toy / "graphify-clang.json").write_text(json.dumps(cfg), encoding="utf-8")
+    clang_c.set_runtime_config()
+    result = extract(sorted(toy.glob("*.[ch]")), root=toy)
+    return result["nodes"], result["edges"]
+
+
+def test_header_declarations_get_nodes_and_contains(toy):
+    """Everything a header declares (used or not) hangs off its header with `contains`, like the old standalone graph."""
+    nodes, edges = _header_decl_project(toy, True)
+    hdr = _by_label(nodes, "other.h")["id"]
+    for label in ("Other_Unused", "Other_Used", "Other_Proto()"):
+        nid = _by_label(nodes, label)["id"]
+        assert any(e["relation"] == "contains" and e["source"] == hdr and e["target"] == nid for e in edges), label
+    assert _edge(nodes, edges, "User_Fn()", "reads_var", "Other_Used")
+
+
+def test_header_declarations_can_be_switched_off(toy):
+    nodes, edges = _header_decl_project(toy, False)
     labels = {n["label"] for n in nodes}
-    assert "Other_Unused" not in labels, "unreferenced extern from a header must not create an orphan"
-    assert "Other_Used" in labels and _edge(nodes, edges, "User_Fn()", "reads_var", "Other_Used")
+    assert "Other_Unused" not in labels and "Other_Proto()" not in labels and "Other_Used" in labels
 
 
 @pytest.mark.parametrize("mode", ["both", "clang"])
@@ -303,3 +322,4 @@ def test_every_included_header_gets_a_file_node_even_outside_scan(tmp_path, mode
     ids = {n["id"] for n in nodes}
     assert all(e["source"] in ids and e["target"] in ids for e in edges if e["relation"] == "contains")
     assert not any("tmp" in n["id"] and "outer" in n["id"] for n in nodes), "machine path leaked into ids"
+

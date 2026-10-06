@@ -79,6 +79,7 @@ class ClangConfig:
     drop_args: list = field(default_factory=list)  # compile-command args to remove (prefix match), e.g. ["-mcpu", "--option"]
     append_args: list = field(default_factory=list)  # always appended, e.g. ["-DTRICORE=1", "--target=arm-none-eabi"]
     extractor: str = "both"  # treesitter | clang | both  (clang = replace tree-sitter's C output)
+    header_declarations: bool = True  # also add `extern` variables / function prototypes declared in headers (file --contains--> symbol)
     debug: bool = False  # verbose log to stderr + graphify-out/clang_debug.log + clang_report.json
     source: str = "defaults"  # where the config came from (for the debug log)
 
@@ -100,7 +101,7 @@ def set_runtime_config(**kwargs) -> None:
 
 def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
     cfg = ClangConfig(base_dir=str(base_dir))
-    for key in ("enabled", "compile_commands", "libclang", "a2l", "debug"):
+    for key in ("enabled", "compile_commands", "libclang", "a2l", "debug", "header_declarations"):
         if key in data:
             setattr(cfg, key, data[key])
     if "extractor" in data:
@@ -828,10 +829,22 @@ class ClangExtractor:
                 var_id = self._global_var(ref, sfile)
                 self.add_edge(fn_id, var_id, "reads_var", sfile, cursor.location.line)
 
+        if kind == K.FUNCTION_DECL and fn_id is None and not cursor.is_definition():
+            if self.cfg.header_declarations and cursor.spelling:  # prototype in a header: file --contains--> function
+                loc = cursor.location
+                fpath = str(loc.file) if loc.file else (sfile or "")
+                self.add_node(make_id(self.stem(fpath), cursor.spelling), "function", fpath,
+                              name=f"{cursor.spelling}()", line=loc.line, decl_only=True,
+                              metadata={"return_type": cursor.result_type.spelling if cursor.result_type else "",
+                                        "parameters": self._parameters(cursor), "source_extractor": "clang"})
+            else:
+                self.skipped_extern_decls += 1
+            return
         if kind == K.VAR_DECL and fn_id is None and self._is_global_var(cursor) and not cursor.is_definition():
-            # `extern T x;` from an included header: not a node by itself. It becomes one only when some
-            # function reads/writes it (_global_var), otherwise every header would add orphan variables.
-            self.skipped_extern_decls += 1
+            if self.cfg.header_declarations:  # `extern T x;` in a header: file --contains--> variable
+                self._global_var(cursor, sfile)
+            else:
+                self.skipped_extern_decls += 1
         elif kind == K.VAR_DECL and fn_id is None and self._is_global_var(cursor):
             var_id = self._global_var(cursor, sfile)
             # keep the variable linked to its file like Graphify links functions: file --contains--> var
@@ -986,7 +999,7 @@ class ClangExtractor:
             self.file_info[rel]["edges_added"] = len(self.edges) - e0
             LOG.info("walked %s: +%d nodes, +%d edges (before dedup)", rel,
                      len(self.nodes) - n0, len(self.edges) - e0)
-        LOG.info("extern declarations in headers not turned into nodes (no orphans): %d", self.skipped_extern_decls)
+        LOG.info("header declarations skipped (header_declarations=false): %d", self.skipped_extern_decls)
         if self.missing_includes:
             top = sorted(self.missing_includes.items(), key=lambda kv: -kv[1])[:15]
             LOG.warning("PREPROCESSING: %d distinct header(s) not found - add their folders as -I in "
