@@ -87,5 +87,14 @@ def run_focus(argv: list[str]) -> int:
     print(f"  placeholder ext_* nodes: {len(ext_nodes)} | file nodes with NO imports edge: {len(no_imp)}")
     for sf in no_imp[:15]:
         print(f"    no imports: {sf}")
+    by_label: dict = defaultdict(list)
+    for i in keep:
+        n = nodes.get(i)
+        if n and n.get("type") in ("function", "variable"):
+            by_label[n.get("label")].append(i)
+    dups = {k: v for k, v in by_label.items() if len(v) > 1}
+    print(f"  symbols with the same label more than once: {len(dups)}")
+    for k, v in list(dups.items())[:8]:
+        print(f"    {k}: " + " | ".join(f"{i} ({nodes[i].get('source_file')})" for i in v))
     print(f"  wrote {out_dir / 'graph.json'}  ->  graphify export html --graph \"{out_dir / 'graph.json'}\"")
     return 0

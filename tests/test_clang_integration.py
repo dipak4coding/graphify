@@ -340,3 +340,14 @@ def test_declaration_merges_into_existing_definition_node():
     all_nodes.append({"id": "vwh2_flagrdlock", "label": "Vwh_FlagRdLock()", "file_type": "code", "source_file": "vwh2/vwh.c"})
     nodes2 = [{"id": "d", "label": "Vwh_FlagRdLock()", "type": "function", "source_file": "../x/vwh.h"}]
     assert _unify_declarations(SimpleNamespace(final_decl_only={"d"}), nodes2, [], all_nodes) == 0
+
+
+def test_declaration_prefers_definition_in_same_stem_file():
+    from types import SimpleNamespace
+    from graphify.extractors.clang_c import _unify_declarations
+    all_nodes = [{"id": "a", "label": "F()", "file_type": "code", "source_file": "m/vwh.c"},
+                 {"id": "b", "label": "F()", "file_type": "code", "source_file": "m/other.c"}]
+    nodes = [{"id": "d", "label": "F()", "type": "function", "source_file": "m/vwh.h"}]
+    edges = [{"source": "x", "target": "d", "relation": "calls"}]
+    assert _unify_declarations(SimpleNamespace(final_decl_only={"d"}), nodes, edges, all_nodes) == 1
+    assert edges[0]["target"] == "a"

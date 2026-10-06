@@ -200,3 +200,13 @@ Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef n
 |---|---|---|
 | Same symbol twice: normal node + orphan `ext_src_vwh_vwh_flagrdlock` | header declaration (clang, decl-only) not merged with the definition when the definition node exists under another id (tree-sitter-made, or defined in a file clang did not parse) | `_unify_declarations`: a decl-only clang node whose label matches exactly one existing symbol node is merged into it (edges re-pointed). Survivors carry `metadata.declaration_only=true`. Ambiguous (several definitions) are left alone |
 | `ext_` ids at all | header lies outside the scan root, or its path resolves differently | debug log lists up to 5 such files (`project files OUTSIDE the scan root`); scan a higher folder if they belong to the project |
+
+## 20. Same label, two ids (user data, 2026-10-06)
+
+| Data | Reading |
+|---|---|
+| `ext_src_vwh_vwh_flagrdlock` and `c_001_fahrzeug_..._03_swfunktion_ku_kku_src_di_vwh_src_vwh_vwh_flagrdlock`, same label | first = clang declaration node (out-of-root or decl-only form), second = a node whose id still carries the absolute machine path (tree-sitter / definition form) |
+| Fix 1 (commit "merge header declarations") | declaration merged into a uniquely named existing symbol |
+| Fix 2 | candidates grouped by root-relative source file (abs/rel forms of one file count once); several definers: the file with the same stem as the header (vwh.h <-> vwh.c) wins |
+| Diagnostic | `graphify focus ...` now prints `symbols with the same label more than once` with ids and source files |
+| Still unexplained | why one id keeps the absolute machine path after extract()'s id canonicalisation: needs that node's `source_file` from the user's graph.json |

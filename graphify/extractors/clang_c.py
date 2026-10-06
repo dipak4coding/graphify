@@ -1136,11 +1136,22 @@ def _replace_treesitter(all_nodes, all_edges, nodes, edges, covered: set, root: 
             "treesitter_nodes_removed": len(removed_ids), "treesitter_edges_removed": dropped_edges}
 
 
-def _unify_declarations(ex, nodes, edges, all_nodes, covered=None) -> int:
+def _unify_declarations(ex, nodes, edges, all_nodes, covered=None, root: Path | None = None) -> int:
     """A header declaration (decl-only clang node) whose definition is a node tree-sitter (or an earlier
     pass) already made under a different id is the SAME symbol: point the declaration's edges at that node and
-    drop the duplicate. Only when the label matches exactly one existing symbol node. ``covered`` (clang mode):
-    never merge into a node that is about to be replaced."""
+    drop the duplicate. Candidates are grouped by (root-relative) source file, so the absolute-path and
+    relative-path forms of one file count once; if several files define the name, the one whose stem equals the
+    header's stem (vwh.h <-> vwh.c) wins, otherwise nothing is merged. ``covered`` (clang mode): never merge into
+    a node that is about to be replaced."""
+    def rel(sf) -> str:
+        sf = str(sf or "").replace("\\", "/")
+        try:
+            if root is not None and Path(sf).is_absolute():
+                return Path(sf).resolve().relative_to(root).as_posix()
+        except (ValueError, OSError):
+            pass
+        return sf
+
     clang_ids = {n["id"] for n in nodes}
     idx: dict = {}
     for n in all_nodes:
@@ -1148,13 +1159,21 @@ def _unify_declarations(ex, nodes, edges, all_nodes, covered=None) -> int:
             continue
         if covered is not None and str(n["source_file"]).replace("\\", "/") in covered:
             continue
-        idx.setdefault(n.get("label"), []).append(n["id"])
+        idx.setdefault(n.get("label"), []).append((rel(n["source_file"]), n["id"]))
     remap = {}
     for n in nodes:
-        if n["id"] in ex.final_decl_only:
-            hits = idx.get(n["label"], [])
-            if len(hits) == 1:
-                remap[n["id"]] = hits[0]
+        if n["id"] not in ex.final_decl_only:
+            continue
+        hits = idx.get(n["label"], [])
+        files = {}
+        for sf, nid in hits:
+            files.setdefault(sf, nid)
+        if len(files) > 1:
+            stem = Path(str(n.get("source_file") or "")).stem.lower()
+            same = {sf: nid for sf, nid in files.items() if Path(sf).stem.lower() == stem}
+            files = same if len(same) == 1 else {}
+        if len(files) == 1:
+            remap[n["id"]] = next(iter(files.values()))
     if not remap:
         return 0
     nodes[:] = [n for n in nodes if n["id"] not in remap]
@@ -1315,14 +1334,14 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
             if cfg.extractor == "clang":
                 covered = set(ex.parsed_files) | {n["source_file"] for n in nodes
                                                    if n["type"] in ("function", "variable") and n.get("source_file")}
-                stats["declarations_unified"] = _unify_declarations(ex, nodes, edges, all_nodes, covered)
+                stats["declarations_unified"] = _unify_declarations(ex, nodes, edges, all_nodes, covered, root)
                 if ex.failed_files:
                     _warn_once("clangfallback", "extractor = clang: these C files could not be parsed and keep "
                                                 f"their tree-sitter symbols: {', '.join(ex.failed_files[:10])}")
                 stats.update(_replace_treesitter(all_nodes, all_edges, nodes, edges, covered, root))
                 stats["imports_added"] = _clang_import_edges(ex, all_nodes, all_edges, root, replace=True)
             else:
-                stats["declarations_unified"] = _unify_declarations(ex, nodes, edges, all_nodes)
+                stats["declarations_unified"] = _unify_declarations(ex, nodes, edges, all_nodes, None, root)
                 stats.update(_merge_into(all_nodes, all_edges, nodes, edges, cfg, ex, root))
                 stats["imports_added"] = _clang_import_edges(ex, all_nodes, all_edges, root, replace=False)
             LOG.info("declarations merged into existing definitions: %d", stats.get("declarations_unified", 0))
