@@ -351,3 +351,35 @@ def test_declaration_prefers_definition_in_same_stem_file():
     edges = [{"source": "x", "target": "d", "relation": "calls"}]
     assert _unify_declarations(SimpleNamespace(final_decl_only={"d"}), nodes, edges, all_nodes) == 1
     assert edges[0]["target"] == "a"
+
+
+def test_windows_style_paths_keep_include_edges(tmp_path, monkeypatch):
+    """Out-of-root headers spelled with backslashes (Windows) must still get ONE file node and their imports edge."""
+    from pathlib import PureWindowsPath
+    from graphify.extractors import clang_c
+    proj, other = tmp_path / "proj", tmp_path / "other"
+    proj.mkdir(); other.mkdir()
+    (proj / "mid.h").write_text('#include "deep.h"\nint M(void);\n', encoding="utf-8")
+    (other / "deep.h").write_text("int D(void);\nextern int D_Var;\n", encoding="utf-8")
+    (proj / "k.c").write_text('#include "mid.h"\nint K(void){return M();}\n', encoding="utf-8")
+    (proj / "graphify-clang.json").write_text(
+        json.dumps({"extra_args": [f"-I{proj.as_posix()}", f"-I{other.as_posix()}"], "extractor": "clang"}), encoding="utf-8")
+    real_name = clang_c.Path.name  # noqa: F841 (documentation only)
+    orig_parse = clang_c.ClangExtractor.parse
+
+    def parse_with_backslashes(self, path):
+        tu = orig_parse(self, path)
+        if tu is not None:  # re-spell the collected include pairs the way libclang does on Windows
+            self.includes = {(str(PureWindowsPath(a)) if Path(a).is_absolute() else a,
+                              str(PureWindowsPath(b)) if Path(b).is_absolute() else b): ln
+                             for (a, b), ln in self.includes.items()}
+        return tu
+
+    monkeypatch.setattr(clang_c.ClangExtractor, "parse", parse_with_backslashes)
+    clang_c.set_runtime_config()
+    result = extract([proj / "k.c"], root=proj)
+    nodes, edges = result["nodes"], result["edges"]
+    deep = [n for n in nodes if n["label"] == "deep.h"]
+    assert len(deep) == 1, [n["id"] for n in deep]
+    mid = _by_label(nodes, "mid.h")
+    assert any(e["relation"] == "imports" and e["source"] == mid["id"] and e["target"] == deep[0]["id"] for e in edges)

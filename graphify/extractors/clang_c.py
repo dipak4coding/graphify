@@ -402,7 +402,8 @@ class ClangExtractor:
 
     def sf(self, path: str) -> str:
         rel = self._rel(path)
-        return rel.as_posix() if rel is not None else str(path)
+        # always forward slashes: Windows spellings (C:\\a\\b.h) must match the keys used for file nodes
+        return rel.as_posix() if rel is not None else Path(str(path)).as_posix()
 
     # ---- graph building ------------------------------------------------------
 
@@ -1204,7 +1205,7 @@ def _ensure_file_nodes(ex, nodes, all_nodes, root: Path) -> int:
     header symbols get a `contains` edge and include edges have both ends. Same id scheme tree-sitter
     uses for file nodes (path based; extract()'s id pass canonicalises it)."""
     have = set(_file_id_map(all_nodes, root))
-    wanted = {f for pair in ex.includes for f in pair}
+    wanted = {str(f).replace("\\", "/") for pair in ex.includes for f in pair}
     wanted |= {str(n["source_file"]).replace("\\", "/") for n in nodes
                if n["type"] in ("function", "variable") and n.get("source_file")}
     added = 0
@@ -1231,14 +1232,17 @@ def _clang_import_edges(ex, all_nodes, all_edges, root: Path, replace: bool) -> 
     if not ex.includes:
         return 0
     fmap = _file_id_map(all_nodes, root)
+    pairs = {}
+    for (a, b), line in ex.includes.items():  # tolerate Windows spellings (backslashes)
+        pairs.setdefault((str(a).replace("\\", "/"), str(b).replace("\\", "/")), line)
     if replace:
-        includers = {fmap[a] for a, _ in ex.includes if a in fmap}
+        includers = {fmap[a] for a, _ in pairs if a in fmap}
         all_edges[:] = [e for e in all_edges if not (e.get("relation") == "imports" and e.get("source") in includers)]
         used = {e.get("source") for e in all_edges} | {e.get("target") for e in all_edges}
         all_nodes[:] = [n for n in all_nodes if not (str(n.get("id", "")).startswith("ext_") and n["id"] not in used)]
     seen = {(e.get("source"), e.get("target"), e.get("relation")) for e in all_edges}
     added = 0
-    for (a, b), line in sorted(ex.includes.items()):
+    for (a, b), line in sorted(pairs.items()):
         if a not in fmap or b not in fmap:
             continue
         key = (fmap[a], fmap[b], "imports")
