@@ -383,3 +383,26 @@ def test_windows_style_paths_keep_include_edges(tmp_path, monkeypatch):
     assert len(deep) == 1, [n["id"] for n in deep]
     mid = _by_label(nodes, "mid.h")
     assert any(e["relation"] == "imports" and e["source"] == mid["id"] and e["target"] == deep[0]["id"] for e in edges)
+
+
+def test_export_html_keeps_edge_direction(tmp_path):
+    """graph.json source/target must survive `export html` (no flipped arrows)."""
+    import re
+    import subprocess
+    import sys
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    nodes = [{"id": i, "label": i, "file_type": "code", "source_file": f"{i}.h"} for i in ("sic_var", "sic_macro")]
+    # reverse-sorted so networkx canonical order differs from the true direction
+    links = [{"source": "sic_macro", "target": "sic_var", "relation": "imports",
+              "confidence": "EXTRACTED", "source_file": "sic_macro.h"}]
+    (out / "graph.json").write_text(json.dumps(
+        {"directed": False, "multigraph": False, "graph": {}, "nodes": nodes, "links": links}))
+    repo = str(Path(__file__).resolve().parents[1])
+    env = dict(__import__("os").environ, PYTHONPATH=repo)
+    subprocess.run([sys.executable, "-m", "graphify", "export", "html"], cwd=tmp_path, env=env,
+                   check=True, capture_output=True)
+    html = (out / "graph.html").read_text(encoding="utf-8")
+    edges = json.loads(re.search(r"const RAW_EDGES = (\[.*?\]);\n", html, re.S).group(1))
+    assert [(e["from"], e["to"]) for e in edges] == [("sic_macro", "sic_var")]

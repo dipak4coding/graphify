@@ -3041,6 +3041,21 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(graph_path.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
+        # graph.json stores true direction in source/target, but an undirected
+        # nx graph canonicalises endpoint order on load, so html/svg/obsidian
+        # drew arrows backwards (e.g. `a.h imports b.h` shown as b -> a). Stamp
+        # _src/_tgt (kept if already present) exactly like `query` does.
+        _raw = dict(
+            _raw,
+            links=[
+                {
+                    **link,
+                    "_src": link.get("_src", link.get("source")),
+                    "_tgt": link.get("_tgt", link.get("target")),
+                }
+                for link in _raw.get("links", [])
+            ],
+        )
         try:
             G = _jg.node_link_graph(_raw, edges="links")
         except TypeError:
