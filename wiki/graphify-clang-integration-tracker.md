@@ -248,3 +248,13 @@ A slice is a view of the finished full graph; nothing is re-parsed.
 | Colours | role -> community: inside, border, shared, include, attached, stub |
 | Legacy | `--flow all` = old N-hop expansion over every relation |
 | Config | `--config focus.json` (`include`, `exclude`, `flow`, `direction`, `depth`, `fanout`, `match`, `includes`) |
+
+## 24. Static vs global vs extern variables (2026-10-08)
+
+| Variable | Before | Now |
+|---|---|---|
+| `static int s;` in a.c | `declaration_only=true` (wrong), contained by a.c | definition: `metadata.storage=static`, `defined_in=a.c`, contained by a.c (`role=definition`) only; same name in b.c is a separate node |
+| `int g;` in a.c + `extern int g;` in g.h | one node in g.h, `declaration_only=true` (wrong), a.c not linked | `storage=global`, `defined_in=a.c`; contained by g.h (`role=declaration`) AND a.c (`role=definition`) |
+| `extern int x;` never defined in a parsed file | declaration-only | unchanged: `declaration_only=true`, contained by the header only |
+| Cause | libclang reports a tentative definition (`int g;`) as `is_definition()==False` | non-extern file-scope variable counts as a definition |
+| `graphify focus` | owner = declaring file | a variable also belongs to the module that DEFINES it (`defined_in`) |

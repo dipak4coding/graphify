@@ -133,3 +133,12 @@ def test_roles_become_communities_for_colouring():
     for n in res["nodes"]:
         by_role.setdefault(n["focus_role"], set()).add(n["community"])
     assert all(len(v) == 1 for v in by_role.values()) and by_role["inside"] != by_role["border"]
+
+
+def test_variable_defined_in_the_module_belongs_to_it_even_if_declared_in_an_outside_header():
+    g = _graph()
+    for n in g["nodes"]:
+        if n["id"] == "V1":                       # declared in src/vwh/oh.h ...
+            n["metadata"] = {"defined_in": "src/kku/kku.c"}   # ... but defined in the module
+    res = slice_graph(g, ["src/kku/"])
+    assert "V1" in _roles(res, "inside")

@@ -461,3 +461,37 @@ def test_read_write_classification_patterns(tmp_path):
     for src, tgt in (("f_addr()", "g_addr"), ("f_ptrw()", "g_ptrw")):
         e = _edge(nodes, edges, src, "reads_var", tgt)
         assert e is not None and e["metadata"].get("address_taken") is True, (src, tgt)
+
+
+def test_static_global_and_extern_variables_are_modelled_differently(tmp_path):
+    """static: only its .c. global: header (declaration) AND the defining .c (definition).
+    extern never defined: declaration only."""
+    (tmp_path / "g.h").write_text("extern int g_glob;\nextern int g_only_decl;\nvoid fa(void); void fb(void);\n")
+    (tmp_path / "a.c").write_text('#include "g.h"\nint g_glob;\nstatic int s_cnt;\n'
+                                  "void fa(void){ s_cnt++; g_glob = s_cnt; }\n")
+    (tmp_path / "b.c").write_text('#include "g.h"\nstatic int s_cnt;\n'
+                                  "void fb(void){ s_cnt = 2; int x = g_glob + g_only_decl; (void)x; }\n")
+    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    result = extract([tmp_path / "a.c", tmp_path / "b.c", tmp_path / "g.h"], root=tmp_path)
+    nodes, edges = result["nodes"], result["edges"]
+    var = {n["id"]: n for n in nodes if n.get("type") == "variable"}
+    files = {n["id"]: n["source_file"] for n in nodes if n["label"] in ("a.c", "b.c", "g.h")}
+
+    def holders(vid):
+        return sorted((files[e["source"]], e["metadata"]["role"]) for e in edges
+                      if e["relation"] == "contains" and e["target"] == vid and e["source"] in files)
+
+    glob = next(n for n in var.values() if n["label"] == "g_glob")
+    assert glob["metadata"]["storage"] == "global" and glob["metadata"]["defined_in"] == "a.c"
+    assert not glob["metadata"].get("declaration_only")
+    assert holders(glob["id"]) == [("a.c", "definition"), ("g.h", "declaration")]
+
+    only = next(n for n in var.values() if n["label"] == "g_only_decl")
+    assert only["metadata"].get("declaration_only") is True
+    assert holders(only["id"]) == [("g.h", "declaration")]
+
+    statics = [n for n in var.values() if n["label"] == "s_cnt"]
+    assert len(statics) == 2, "two statics with one name are two variables"
+    for n in statics:
+        assert n["metadata"]["storage"] == "static" and not n["metadata"].get("declaration_only")
+        assert holders(n["id"]) == [(n["source_file"], "definition")]

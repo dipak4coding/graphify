@@ -665,6 +665,30 @@ class ClangExtractor:
         return (ref is not None and ref.kind == self.K.VAR_DECL and ref.semantic_parent is not None
                 and ref.semantic_parent.kind == self.K.TRANSLATION_UNIT)
 
+    def _is_var_definition(self, cursor) -> bool:
+        """libclang reports a tentative definition (`int x;` without extern or initialiser)
+        as is_definition() == False, which made every ECU global look declaration-only."""
+        try:
+            if cursor.is_definition():
+                return True
+            return cursor.storage_class != self.ci.StorageClass.EXTERN
+        except Exception:
+            return cursor.is_definition()
+
+    def _mark_var_definition(self, var_id, cursor, sfile):
+        node = self.nodes.get(var_id)
+        if node is None:
+            return
+        loc = cursor.location
+        dfile = str(loc.file) if loc.file else (sfile or "")
+        try:
+            static = cursor.storage_class == self.ci.StorageClass.STATIC
+        except Exception:
+            static = False
+        node["metadata"].update({"storage": "static" if static else "global",
+                                 "defined_in": self.sf(dfile), "defined_line": loc.line})
+        self.decl_only.discard(var_id)
+
     # ---- handlers ----------------------------------------------------------------
 
     def _handle_calibration_access(self, cursor, fn_id, sfile):
@@ -936,15 +960,14 @@ class ClangExtractor:
             else:
                 self.skipped_extern_decls += 1
             return
-        if kind == K.VAR_DECL and fn_id is None and self._is_global_var(cursor) and not cursor.is_definition():
-            if self.cfg.header_declarations:  # `extern T x;` in a header: file --contains--> variable
+        if kind == K.VAR_DECL and fn_id is None and self._is_global_var(cursor):
+            if self._is_var_definition(cursor):
+                # `static int x;`, `int x;` (tentative definition) and `int x = 1;` all DEFINE x
+                self._mark_var_definition(self._global_var(cursor, sfile), cursor, sfile)
+            elif self.cfg.header_declarations:  # `extern T x;` in a header: file --contains--> variable
                 self._global_var(cursor, sfile)
             else:
                 self.skipped_extern_decls += 1
-        elif kind == K.VAR_DECL and fn_id is None and self._is_global_var(cursor):
-            var_id = self._global_var(cursor, sfile)
-            # keep the variable linked to its file like Graphify links functions: file --contains--> var
-            self._pending_contains.append((cursor, var_id))
 
         for child in cursor.get_children():
             self.walk(child, fn_id, sfile)
@@ -1220,17 +1243,31 @@ def _replace_treesitter(all_nodes, all_edges, nodes, edges, covered: set, root: 
     for node in nodes:  # file --contains--> function/variable (tree-sitter's contains edges were dropped)
         if node["type"] not in ("function", "variable") or not node.get("source_file"):
             continue
-        file_id = fmap.get(str(node["source_file"]).replace("\\", "/"))
-        if file_id and file_id in existing and file_id != node["id"]:
-            key = (file_id, node["id"], "contains")
-            if key not in seen:
-                seen.add(key)
-                all_edges.append({"source": file_id, "target": node["id"], "relation": "contains",
-                                  "confidence": "EXTRACTED", "source_file": node["source_file"], "weight": 1.0,
-                                  **({"source_location": node["source_location"]} if node.get("source_location") else {})})
-                e_added += 1
+        for cfile, role in _contains_specs(node):
+            file_id = fmap.get(str(cfile).replace("\\", "/"))
+            if file_id and file_id in existing and file_id != node["id"]:
+                key = (file_id, node["id"], "contains")
+                if key not in seen:
+                    seen.add(key)
+                    all_edges.append({"source": file_id, "target": node["id"], "relation": "contains",
+                                      "confidence": "EXTRACTED", "source_file": cfile, "weight": 1.0,
+                                      "metadata": {"role": role},
+                                      **({"source_location": node["source_location"]} if node.get("source_location") else {})})
+                    e_added += 1
     return {"nodes_added": len(nodes), "nodes_enriched": 0, "edges_added": e_added,
             "treesitter_nodes_removed": len(removed_ids), "treesitter_edges_removed": dropped_edges}
+
+
+def _contains_specs(node: dict) -> list:
+    """[(file, role)] of the files that hold a symbol: a header declaration and/or the defining file."""
+    meta = node.get("metadata") or {}
+    sf = node.get("source_file")
+    if meta.get("declaration_only"):
+        return [(sf, "declaration")]
+    dfile = meta.get("defined_in")
+    if dfile and str(dfile).replace("\\", "/") != str(sf).replace("\\", "/"):
+        return [(sf, "declaration"), (dfile, "definition")]
+    return [(sf, "definition")]
 
 
 def _unify_declarations(ex, nodes, edges, all_nodes, covered=None, root: Path | None = None) -> int:
@@ -1536,17 +1573,19 @@ def _merge_into(all_nodes, all_edges, nodes, edges, cfg: ClangConfig, ex: ClangE
     for node in nodes:
         if node["type"] not in ("function", "variable") or node["id"] not in kept_ids or not node.get("source_file"):
             continue
-        file_id = fmap.get(str(node["source_file"]).replace("\\", "/"))
-        if file_id and file_id in kept_ids and file_id != node["id"]:
-            key = (file_id, node["id"], "contains")
-            if key not in seen:
-                seen.add(key)
-                all_edges.append({
-                    "source": file_id, "target": node["id"], "relation": "contains",
-                    "confidence": "EXTRACTED", "source_file": node["source_file"], "weight": 1.0,
-                    **({"source_location": node["source_location"]} if node.get("source_location") else {}),
-                })
-                e_added += 1
+        for cfile, role in _contains_specs(node):
+            file_id = fmap.get(str(cfile).replace("\\", "/"))
+            if file_id and file_id in kept_ids and file_id != node["id"]:
+                key = (file_id, node["id"], "contains")
+                if key not in seen:
+                    seen.add(key)
+                    all_edges.append({
+                        "source": file_id, "target": node["id"], "relation": "contains",
+                        "confidence": "EXTRACTED", "source_file": cfile, "weight": 1.0,
+                        "metadata": {"role": role},
+                        **({"source_location": node["source_location"]} if node.get("source_location") else {}),
+                    })
+                    e_added += 1
     return {"nodes_added": added, "nodes_enriched": enriched, "edges_added": e_added}
 
 

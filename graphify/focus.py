@@ -73,7 +73,9 @@ def slice_graph(raw: dict, include, exclude=(), flows=("calls", "data"), directi
 
     def is_seed(n: dict) -> bool:
         sf, lab = _norm(n.get("source_file")), _norm(n.get("label"))
-        hay = [sf] if match == "path" else [lab] if match == "label" else [sf, lab]
+        dfile = _norm((n.get("metadata") or {}).get("defined_in"))
+        files = [sf] + ([dfile] if dfile and dfile != sf else [])  # a variable belongs to the module that DEFINES it
+        hay = files if match == "path" else [lab] if match == "label" else files + [lab]
         return any(p in h for p in include for h in hay) and not any(x in sf for x in exclude)
 
     seeds = {i for i, n in nodes.items() if is_seed(n)}
