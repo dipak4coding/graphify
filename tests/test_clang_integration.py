@@ -406,3 +406,18 @@ def test_export_html_keeps_edge_direction(tmp_path):
     html = (out / "graph.html").read_text(encoding="utf-8")
     edges = json.loads(re.search(r"const RAW_EDGES = (\[.*?\]);\n", html, re.S).group(1))
     assert [(e["from"], e["to"]) for e in edges] == [("sic_macro", "sic_var")]
+
+
+def test_loaded_graph_keeps_true_edge_direction():
+    """Every renderer reads _src/_tgt; the shared loader must stamp them (calls, contains, imports)."""
+    from graphify.paths import load_node_link_graph
+
+    nodes = [{"id": i} for i in ("a_file", "b_fn", "z_fn")]  # node order != edge direction
+    links = [
+        {"source": "z_fn", "target": "b_fn", "relation": "calls"},
+        {"source": "a_file", "target": "z_fn", "relation": "contains"},
+        {"source": "z_fn", "target": "a_file", "relation": "imports"},
+    ]
+    G = load_node_link_graph({"directed": False, "multigraph": True, "graph": {}, "nodes": nodes, "links": links})
+    got = sorted((d["relation"], d["_src"], d["_tgt"]) for _, _, d in G.edges(data=True))
+    assert got == sorted((l["relation"], l["source"], l["target"]) for l in links)

@@ -494,6 +494,17 @@ def load_node_link_graph(path_or_data):
         data = json.loads(p.read_text(encoding="utf-8"))
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
+    # graph.json keeps the true direction in source/target, but an undirected
+    # networkx graph canonicalises endpoint order on load, so anything rendered
+    # from the loaded graph (graph.html, svg, ...) drew `calls`, `contains` and
+    # `imports` arrows backwards. Stamp _src/_tgt (kept if already present), the
+    # markers every renderer reads.
+    if isinstance(data, dict) and not data.get("directed") and isinstance(data.get("links"), list):
+        data = dict(data, links=[
+            {**l, "_src": l.get("_src", l.get("source")), "_tgt": l.get("_tgt", l.get("target"))}
+            if isinstance(l, dict) else l
+            for l in data["links"]
+        ])
     try:
         return json_graph.node_link_graph(data, edges="links")
     except TypeError:  # networkx too old for the edges kwarg; default is "links"
