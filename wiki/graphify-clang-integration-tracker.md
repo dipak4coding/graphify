@@ -210,3 +210,41 @@ Known limit of `clang` mode: type-stub nodes with no source file (e.g. typedef n
 | Fix 2 | candidates grouped by root-relative source file (abs/rel forms of one file count once); several definers: the file with the same stem as the header (vwh.h <-> vwh.c) wins |
 | Diagnostic | `graphify focus ...` now prints `symbols with the same label more than once` with ids and source files |
 | Still unexplained | why one id keeps the absolute machine path after extract()'s id canonicalisation: needs that node's `source_file` from the user's graph.json |
+
+## 21. Read/write classification (found 2026-10-08)
+
+| Pattern | Was | Now |
+|---|---|---|
+| `g_x++` / `--g_x` | `reads_var` | `reads_writes_var` |
+| `g_arr[i] = v`, `g_st.f = v` | `reads_var` | `writes_var` (follows `.member` / `[i]` on arrays and structs; stops at pointers) |
+| Assignment inside a macro (`SETV(v)`) | `reads_var` (token offsets unreliable in expansions) | `writes_var` (operator kind read from libclang) |
+| `&g_x` / `p = &g_x; *p = v` | `reads_var` | `reads_var` + `metadata.address_taken=true` (cannot be attributed statically) |
+| Not detectable | | writes through pointers, code in inactive `#ifdef`, files outside the compile DB |
+
+## 22. Arrow direction in graph.html (found 2026-10-08)
+
+| Item | Result |
+|---|---|
+| Symptom | `calls`, `contains`, `imports` drawn backwards; `graph.json` was correct |
+| Cause | graph.json is loaded as an undirected graph (endpoint order lost); renderers read `_src/_tgt` |
+| Fix | `graphify export` and the shared `load_node_link_graph` stamp `_src/_tgt` from `source/target` |
+| Check | every edge of `graph.html` compared with `graph.json`, all relations, all paths (`update`, `update --no-cluster`, `export html`): 0 mismatches |
+
+## 23. Module slicing: `graphify focus` (2026-10-08)
+
+A slice is a view of the finished full graph; nothing is re-parsed.
+
+| Part | Rule |
+|---|---|
+| Inside | nodes whose `source_file` contains the pattern(s) (`--match path`, default); `--exclude` removes |
+| Hop | `calls`: one edge. `data`: function -> variable -> function (the variable is pass-through, not a hop) |
+| Direction | `in` = upstream (callers, writers of variables read); `out` = downstream (callees, readers of variables written); a node found upstream keeps going upstream |
+| Variable interface | variables the module reads (`in`) / writes (`out`) are always shown as `shared` |
+| Border | outside functions at the last hop: shown, not expanded; reasons in `focus_report.json` |
+| Fan-out | more than `--fanout` (default 30) neighbours of one expansion: one `stub` node |
+| Structure | module files + their `contains`; DIRECT includes of module files only (`--no-includes` drops); `contains`/`imports` are never followed outward |
+| `reads_writes_var` | counts as reader and writer |
+| `address_taken` | flagged on the variable node and listed in the report |
+| Colours | role -> community: inside, border, shared, include, attached, stub |
+| Legacy | `--flow all` = old N-hop expansion over every relation |
+| Config | `--config focus.json` (`include`, `exclude`, `flow`, `direction`, `depth`, `fanout`, `match`, `includes`) |
