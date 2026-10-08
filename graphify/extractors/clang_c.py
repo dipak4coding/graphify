@@ -332,6 +332,12 @@ _IPO_LOOKUP_ROLES = {
 _IPO_AXIS_ROLES = {"x_axis", "y_axis", "z_axis"}
 _IPO_DATA_ROLES = {"curve_data", "map_data", "cuboid_data"}
 _ASSIGNMENT_OPS = {"=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="}
+# libclang (>= 17) operator kinds read straight from the AST. Token offsets are not
+# reliable inside macro expansions, which made `SET(x)` style writes look like reads.
+_C_BINOP_ASSIGN = {22: "=", 23: "*=", 24: "/=", 25: "%=", 26: "+=", 27: "-=",
+                   28: "<<=", 29: ">>=", 30: "&=", 31: "^=", 32: "|="}
+_C_UNOP_INCDEC = {1, 2, 3, 4}  # x++, x--, ++x, --x
+_C_UNOP_ADDROF = 5
 _INT_BINOPS = {"+": lambda a, b: a + b, "-": lambda a, b: a - b, "*": lambda a, b: a * b,
                "<<": lambda a, b: a << b}
 _MAX_LINES_PER_EDGE = 8
@@ -365,6 +371,7 @@ class ClangExtractor:
         self.missing_includes: dict = {}  # header -> number of 'file not found' errors
         self.parsed_files: list = []
         self.system_dirs: set = set()
+        self._typed_ops: set = set()
         self.final_decl_only: set = set()
         self.skipped_extern_decls = 0  # extern declarations seen in headers and not turned into nodes
         self.includes: dict = {}  # (including rel file, included rel file) -> line
@@ -472,7 +479,58 @@ class ClangExtractor:
             c = kids[0]
         return c
 
+    def _c_op_kind(self, cursor, fn_name):
+        """Operator kind from libclang's C API, or None when this libclang lacks it."""
+        try:
+            fn = getattr(self.ci.conf.lib, fn_name)
+            if fn_name not in self._typed_ops:
+                import ctypes
+                fn.argtypes = [self.ci.Cursor]
+                fn.restype = ctypes.c_int
+                self._typed_ops.add(fn_name)
+            return int(fn(cursor))
+        except Exception:
+            return None
+
+    def _peel(self, c):
+        """Skip implicit casts and parentheses (not `&` / `*`)."""
+        K = self.K
+        while c.kind in (K.UNEXPOSED_EXPR, K.PAREN_EXPR, K.CSTYLE_CAST_EXPR):
+            kids = list(c.get_children())
+            if not kids:
+                return c
+            c = kids[0]
+        return c
+
+    def _lvalue_root(self, c):
+        """(DECL_REF of the global variable an lvalue stores into, index exprs to walk).
+
+        Follows `.member` and `[i]` on arrays/structs (`g_arr[2] = 1`, `g_st.f = 1`
+        write the variable). Stops at pointers (`p->f`, `p[i]`, `*p`): those write the
+        pointee, which static analysis cannot attribute to a variable.
+        """
+        K, extras = self.K, []
+        for _ in range(32):
+            c = self._peel(c)
+            if c.kind == K.DECL_REF_EXPR:
+                return (c, extras) if self._is_global_var(c.referenced) else (None, [])
+            if c.kind not in (K.ARRAY_SUBSCRIPT_EXPR, K.MEMBER_REF_EXPR):
+                return None, []
+            kids = list(c.get_children())
+            if not kids:
+                return None, []
+            base = self._peel(kids[0])
+            if base.type.get_canonical().kind == self.T.POINTER:
+                return None, []
+            extras.extend(kids[1:])
+            c = base
+        return None, []
+
     def _operator_str(self, cursor):
+        if cursor.kind in (self.K.BINARY_OPERATOR, self.K.COMPOUND_ASSIGNMENT_OPERATOR):
+            k = self._c_op_kind(cursor, "clang_getCursorBinaryOperatorKind")
+            if k in _C_BINOP_ASSIGN:
+                return _C_BINOP_ASSIGN[k]
         children = list(cursor.get_children())
         if len(children) != 2:
             return None
@@ -759,20 +817,53 @@ class ClangExtractor:
         if len(kids) != 2:
             return False
         lhs, rhs = kids
-        target = self._unwrap(lhs)
         handled_lhs = False
-        if target.kind == self.K.DECL_REF_EXPR:
-            ref = target.referenced
-            if self._is_global_var(ref):
+        inner = self._peel(lhs)
+        if inner.kind in (self.K.MEMBER_REF_EXPR, self.K.ARRAY_SUBSCRIPT_EXPR) \
+                and self._handle_calibration_access(inner, fn_id, sfile):
+            handled_lhs = True
+        else:
+            root, extras = self._lvalue_root(lhs)
+            if root is not None:
                 line = cursor.location.line
-                var_id = self._global_var(ref, sfile)
+                var_id = self._global_var(root.referenced, sfile)
                 self.add_edge(fn_id, var_id, "writes_var", sfile, line)
                 if op != "=":
                     self.add_edge(fn_id, var_id, "reads_var", sfile, line)
+                for x in extras:
+                    self.walk(x, fn_id, sfile)
                 handled_lhs = True
         self.walk(rhs, fn_id, sfile)
         if not handled_lhs:
             self.walk(lhs, fn_id, sfile)
+        return True
+
+    def _handle_unary_access(self, cursor, fn_id, sfile):
+        """`x++` / `--x` read AND write x; `&x` reads x and flags it `address_taken`
+        (the callee or pointer may write it; that cannot be resolved statically)."""
+        uk = self._c_op_kind(cursor, "clang_getCursorUnaryOperatorKind")
+        if uk not in _C_UNOP_INCDEC and uk != _C_UNOP_ADDROF:
+            return False
+        kids = list(cursor.get_children())
+        if len(kids) != 1:
+            return False
+        inner = self._peel(kids[0])
+        if inner.kind in (self.K.MEMBER_REF_EXPR, self.K.ARRAY_SUBSCRIPT_EXPR) \
+                and self._handle_calibration_access(inner, fn_id, sfile):
+            return True
+        root, extras = self._lvalue_root(kids[0])
+        if root is None:
+            return False
+        line = cursor.location.line
+        var_id = self._global_var(root.referenced, sfile)
+        if uk in _C_UNOP_INCDEC:
+            self.add_edge(fn_id, var_id, "writes_var", sfile, line)
+            self.add_edge(fn_id, var_id, "reads_var", sfile, line)
+        else:
+            self.add_edge(fn_id, var_id, "reads_var", sfile, line)
+            self.edges[(fn_id, var_id, "reads_var")]["metadata"]["address_taken"] = True
+        for x in extras:
+            self.walk(x, fn_id, sfile)
         return True
 
     # ---- walk ---------------------------------------------------------------------
@@ -790,6 +881,9 @@ class ClangExtractor:
                 return
         if kind == K.COMPOUND_ASSIGNMENT_OPERATOR:
             if self._handle_assignment_write(cursor, fn_id, sfile):
+                return
+        if kind == K.UNARY_OPERATOR and fn_id is not None:
+            if self._handle_unary_access(cursor, fn_id, sfile):
                 return
 
         if kind == K.FUNCTION_DECL and cursor.is_definition():
@@ -1055,6 +1149,8 @@ class ClangExtractor:
             lines = sorted(set(r["metadata"].get("lines", [])) | set(w["metadata"].get("lines", [])))
             merged = dict(r, relation="reads_writes_var", context=context_for("reads_writes_var"))
             merged["metadata"] = {"lines": lines[:_MAX_LINES_PER_EDGE], "merged_from": ["reads_var", "writes_var"]}
+            if r["metadata"].get("address_taken") or w["metadata"].get("address_taken"):
+                merged["metadata"]["address_taken"] = True
             if lines:
                 merged["source_location"] = f"L{lines[0]}"
             edges[(src, tgt, "reads_writes_var")] = merged

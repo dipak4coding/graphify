@@ -324,7 +324,6 @@ def test_every_included_header_gets_a_file_node_even_outside_scan(tmp_path, mode
     assert not any("tmp" in n["id"] and "outer" in n["id"] for n in nodes), "machine path leaked into ids"
 
 
-
 def test_declaration_merges_into_existing_definition_node():
     """Header declaration (clang) + definition only known under another id (tree-sitter): one node, edges follow."""
     from types import SimpleNamespace
@@ -421,3 +420,44 @@ def test_loaded_graph_keeps_true_edge_direction():
     G = load_node_link_graph({"directed": False, "multigraph": True, "graph": {}, "nodes": nodes, "links": links})
     got = sorted((d["relation"], d["_src"], d["_tgt"]) for _, _, d in G.edges(data=True))
     assert got == sorted((l["relation"], l["source"], l["target"]) for l in links)
+
+
+def test_read_write_classification_patterns(tmp_path):
+    """Writes through ++/--, array elements, struct members and macros must be writes."""
+    (tmp_path / "v.h").write_text(
+        "typedef struct { int f; int h; } S_t;\n"
+        "extern int g_inc, g_cmp, g_arr[4], g_addr, g_ptrw, g_arg, g_ro;\nextern S_t g_st;\n"
+        "extern void sink(int *p);\nextern int use(int v);\n")
+    (tmp_path / "a.c").write_text(
+        '#include "v.h"\n'
+        "int g_inc, g_cmp, g_arr[4], g_addr, g_ptrw, g_arg, g_ro;\nS_t g_st;\n"
+        "#define SETV(v) do { g_inc = (v); } while (0)\n"
+        "void f_incr(void){ g_inc++; }\n"
+        "void f_cmpd(void){ g_cmp += 2; }\n"
+        "void f_arr(void){ g_arr[2] = 3; }\n"
+        "void f_sw(void){ g_st.f = 1; }\n"
+        "void f_sr(void){ int x = g_st.h; (void)x; }\n"
+        "void f_addr(void){ sink(&g_addr); }\n"
+        "void f_ptrw(void){ int *p = &g_ptrw; *p = 7; }\n"
+        "void f_arg(void){ use(g_arg); }\n"
+        "void f_macro(void){ SETV(4); }\n"
+        "void f_ro(void){ int y = g_ro; (void)y; }\n")
+    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    result = extract([tmp_path / "a.c", tmp_path / "v.h"], root=tmp_path)
+    nodes, edges = result["nodes"], result["edges"]
+    expect = [
+        ("f_incr()", "reads_writes_var", "g_inc"),
+        ("f_cmpd()", "reads_writes_var", "g_cmp"),
+        ("f_arr()", "writes_var", "g_arr"),
+        ("f_sw()", "writes_var", "g_st"),
+        ("f_sr()", "reads_var", "g_st"),
+        ("f_macro()", "writes_var", "g_inc"),
+        ("f_arg()", "reads_var", "g_arg"),
+        ("f_ro()", "reads_var", "g_ro"),
+    ]
+    for src, rel, tgt in expect:
+        assert _edge(nodes, edges, src, rel, tgt), f"{src} {rel} {tgt}"
+    # address taken: cannot be attributed statically, so it is a read flagged address_taken
+    for src, tgt in (("f_addr()", "g_addr"), ("f_ptrw()", "g_ptrw")):
+        e = _edge(nodes, edges, src, "reads_var", tgt)
+        assert e is not None and e["metadata"].get("address_taken") is True, (src, tgt)
