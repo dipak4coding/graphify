@@ -841,7 +841,11 @@ from graphify.relations import (  # noqa: E402
     intent_terms as _enrichment_intent_terms,
 )
 
-from graphify.relations import metadata_lines as _metadata_lines  # noqa: E402
+from graphify.relations import (  # noqa: E402
+    address_taken_line as _address_taken_line,
+    edge_flags as _edge_flags,
+    metadata_lines as _metadata_lines,
+)
 
 _RELATIONAL_INTENT_TERMS = _RELATIONAL_INTENT_TERMS | _enrichment_intent_terms()
 
@@ -1129,6 +1133,12 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             _extra += f" range={sanitize_label(str(_meta['a2l_range']))}"
         if _meta.get("bit_mask") is not None:
             _extra += f" mask={_meta['bit_mask']}"
+        if _meta.get("storage"):
+            _extra += f" storage={sanitize_label(str(_meta['storage']))}"
+        if _meta.get("defined_in"):
+            _extra += f" defined_in={sanitize_label(str(_meta['defined_in']))}"
+        if _meta.get("declaration_only"):
+            _extra += " decl_only"
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
@@ -1169,7 +1179,7 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                 f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
                 f"--{sanitize_label(str(d.get('relation', '')))} "
                 f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
-                f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
+                f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}{sanitize_label(_edge_flags(d))}"
             )
             lines.append(line)
     output = "\n".join(lines)
@@ -2043,6 +2053,7 @@ def _build_server(graph_path: str):
               if d.get("definition_file") else []),
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             *[sanitize_label(_ml) for _ml in _metadata_lines(d)],
+            *([_addr] if (_addr := _address_taken_line(G, nid)) else []),
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",
         ])
@@ -2069,7 +2080,7 @@ def _build_server(graph_path: str):
                 continue
             lines.append(
                 f"  --> {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}{sanitize_label(_edge_flags(d))}"
             )
         for nb in G.predecessors(nid):
             d = edge_data(G, nb, nid)
@@ -2078,7 +2089,7 @@ def _build_server(graph_path: str):
                 continue
             lines.append(
                 f"  <-- {sanitize_label(G.nodes[nb].get('label', nb))} "
-                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}"
+                f"[{sanitize_label(str(rel))}] [{sanitize_label(str(d.get('confidence', '')))}]{_edge_at(d)}{sanitize_label(_edge_flags(d))}"
             )
         budget = int(arguments.get("token_budget", 2000))
         return _cut_lines_to_budget(

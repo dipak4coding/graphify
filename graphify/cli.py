@@ -1845,9 +1845,12 @@ def dispatch_command(cmd: str) -> None:
             f"  Source:    {d.get('source_file', '')} {d.get('source_location', '')}".rstrip()
         )
         print(f"  Type:      {d.get('file_type', '')}")
-        from graphify.relations import metadata_lines, relation_priority
+        from graphify.relations import address_taken_line, edge_flags, metadata_lines, relation_priority
         for _ml in metadata_lines(d):
             print(_ml)
+        _addr = address_taken_line(G, nid)
+        if _addr:
+            print(_addr)
         print(f"  Community: {d.get('community_name') or d.get('community', '')}")
         # Work-memory overlay: a derived experiential hint from `graphify reflect`,
         # merged in display-only from the .graphify_learning.json sidecar next to
@@ -1903,7 +1906,7 @@ def dispatch_command(cmd: str) -> None:
                 loc = edata.get("source_location") or ""
                 sfile = edata.get("source_file") or ""
                 at = f" {sfile}:{loc}" if loc else ""
-                print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]{at}")
+                print(f"  {arrow} {G.nodes[nb].get('label', nb)} [{rel}] [{conf}]{at}{edge_flags(edata)}")
             if len(connections) > 20:
                 remainder = connections[20:]
                 print(f"  ... and {len(remainder)} more")

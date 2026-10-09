@@ -108,7 +108,30 @@ _META_KEYS = (
     ("a2l_characteristic_name", "A2L characteristic"), ("a2l_axis_pts_name", "A2L axis"),
     ("a2l_range", "Range"), ("bit_mask", "Bit mask"), ("accessed_via", "Accessed via"),
     ("return_type", "Returns"),
+    ("storage", "Storage"), ("defined_in", "Definition"), ("declaration_only", "Decl. only"),
 )
+
+
+def edge_flags(edge: dict) -> str:
+    """Suffix for an edge line: ` role=declaration|definition` (contains), ` address_taken` (&x)."""
+    meta = edge.get("metadata") if isinstance(edge, dict) and isinstance(edge.get("metadata"), dict) else {}
+    out = ""
+    if meta.get("role"):
+        out += f" role={meta['role']}"
+    if meta.get("address_taken"):
+        out += " address_taken"
+    return out
+
+
+def address_taken_line(G, nid: str, indent: str = "  "):
+    """`Address:` line for a variable when any access to it takes its address, else None."""
+    edges = list(G.edges(nid, data=True))
+    if G.is_directed():
+        edges += list(G.in_edges(nid, data=True))
+    for _u, _v, d in edges:
+        if isinstance(d.get("metadata"), dict) and d["metadata"].get("address_taken"):
+            return f"{indent}Address:   taken (&) - writes through the pointer are not tracked"
+    return None
 
 
 def metadata_lines(node: dict, indent: str = "  ") -> list:
