@@ -1797,7 +1797,8 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
+            print('Usage: graphify explain "<node>" [--graph path] [--inputs [--depth N] [--fanout N] [--budget N]]',
+                  file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _find_node, find_node_ambiguity
         from networkx.readwrite import json_graph
@@ -1805,9 +1806,17 @@ def dispatch_command(cmd: str) -> None:
         label = sys.argv[2]
         graph_path = _default_graph_path()
         args = sys.argv[3:]
+        inputs_mode = "--inputs" in args
+        opt = {"--depth": 1, "--fanout": 30, "--budget": 2000}
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+            elif a in opt and i + 1 < len(args):
+                try:
+                    opt[a] = int(args[i + 1])
+                except ValueError:
+                    print(f"error: {a} must be an integer", file=sys.stderr)
+                    sys.exit(1)
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1816,6 +1825,7 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(gp.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
+        _inputs_raw = _raw
         # Force directed so the renderer can recover stored caller→callee direction.
         _raw = {**_raw, "directed": True}
         try:
@@ -1839,6 +1849,17 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
         nid = matches[0]
         d = G.nodes[nid]
+        if inputs_mode:
+            if d.get("type") == "function":
+                from graphify.inputs import inputs_report
+                print(inputs_report(_inputs_raw, nid, depth=opt["--depth"], fanout=opt["--fanout"],
+                                    budget=opt["--budget"]))
+                from graphify import querylog
+                querylog.log_query(kind="explain", question=sys.argv[2], corpus=str(gp), nodes_returned=0)
+                _touch_query_stamp(gp)
+                sys.exit(0)
+            print(f"note: --inputs applies to functions; '{d.get('label', nid)}' is a "
+                  f"{d.get('type') or 'node'}, showing the normal explain.", file=sys.stderr)
         print(f"Node: {d.get('label', nid)}")
         print(f"  ID:        {nid}")
         print(

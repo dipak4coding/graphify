@@ -258,3 +258,25 @@ A slice is a view of the finished full graph; nothing is re-parsed.
 | `extern int x;` never defined in a parsed file | declaration-only | unchanged: `declaration_only=true`, contained by the header only |
 | Cause | libclang reports a tentative definition (`int g;`) as `is_definition()==False` | non-extern file-scope variable counts as a definition |
 | `graphify focus` | owner = declaring file | a variable also belongs to the module that DEFINES it (`defined_in`) |
+
+## 25. What the AI sees, and `explain --inputs` (2026-10-09)
+
+| Command | Chooses | Prints |
+|---|---|---|
+| `explain X` | X + direct neighbours (1 hop), max 20, ordered write, read, calibration, axis, a2l, others | node facts, then `-->`/`<--` neighbours with `file:line` |
+| `query "..."` | up to 3 scored seeds, BFS to `--depth` (default 2), hubs not expanded, ~2000-token cut (nodes first, then edges) | `NODE` and `EDGE` lines |
+| `explain F --inputs [--depth N --fanout N --budget N]` | upstream data slice from F (`slice_graph`, `direction=in`, variable = pass-through) | params, callers, per input variable its writers with `file:line`, calibrations; hop by hop |
+
+| Newly printed fact | Where |
+|---|---|
+| `storage`, `defined_in`, `decl_only` | `NODE` lines, `get_node`, `explain` |
+| contains `role=declaration|definition`, `address_taken` | `EDGE` lines, `explain`, `get_neighbors` |
+| `Address: taken` | `explain` / `get_node` for a variable whose address is taken |
+
+| `--inputs` rule | Behaviour |
+|---|---|
+| Hop 1 | always complete |
+| Deeper hop | printed only if the whole hop fits the budget, else "stopped after hop k" |
+| Variable without writer | says so (pointer write, inactive `#ifdef`, outside compile DB, external input) |
+| Read-modify-write | "also written by F itself" |
+| Callees | not shown (outputs, not inputs) |

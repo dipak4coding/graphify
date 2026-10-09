@@ -56,8 +56,10 @@ def _is_file_node(n: dict) -> bool:
 
 
 def slice_graph(raw: dict, include, exclude=(), flows=("calls", "data"), direction="both", depth=1,
-                fanout=30, match="path", with_includes=True) -> dict:
-    """Pure function: node-link dict in, ``{"nodes", "links", "report", "roles"}`` out."""
+                fanout=30, match="path", with_includes=True, seed_ids=None) -> dict:
+    """Pure function: node-link dict in, ``{"nodes", "links", "report", "roles"}`` out.
+
+    ``seed_ids`` starts the slice from exactly those node ids instead of a path pattern."""
     include = [_norm(p) for p in include if p]
     exclude = [_norm(p) for p in exclude if p]
     flows = set(flows)
@@ -78,7 +80,8 @@ def slice_graph(raw: dict, include, exclude=(), flows=("calls", "data"), directi
         hay = files if match == "path" else [lab] if match == "label" else files + [lab]
         return any(p in h for p in include for h in hay) and not any(x in sf for x in exclude)
 
-    seeds = {i for i, n in nodes.items() if is_seed(n)}
+    seeds = ({i for i in seed_ids if i in nodes} if seed_ids is not None
+             else {i for i, n in nodes.items() if is_seed(n)})
     roles: dict = {i: "inside" for i in seeds}
     hop: dict = {i: 0 for i in seeds}
     why: dict = defaultdict(list)       # border id -> readable reasons
