@@ -69,3 +69,21 @@ def test_query_text_node_and_edge_lines_carry_the_facts(tmp_path):
     assert "storage=global" in node_line and "defined_in=kku/kku.c" in node_line
     assert any(ln.startswith("EDGE") and "role=declaration" in ln for ln in text.splitlines())
     assert any(ln.startswith("EDGE") and "address_taken" in ln for ln in text.splitlines())
+
+
+def test_graphml_export_handles_multigraph_with_parallel_edges(tmp_path):
+    """`graphify export graphml` crashed with 'not enough values to unpack' on a multigraph."""
+    import networkx as nx
+
+    from graphify.export import to_graphml
+
+    G = nx.MultiGraph()
+    G.add_node("a", label="a", community=0)
+    G.add_node("b", label="b", community=0)
+    G.add_edge("a", "b", relation="reads_var", metadata={"address_taken": True}, _src="a", _tgt="b")
+    G.add_edge("a", "b", relation="writes_var", metadata=None, _src="a", _tgt="b")
+    out = tmp_path / "g.graphml"
+    to_graphml(G, {0: ["a", "b"]}, str(out))
+    text = out.read_text(encoding="utf-8")
+    assert text.count("<edge ") == 2 and "address_taken" in text and "_src" not in text
+    assert nx.read_graphml(str(out)).number_of_edges() == 2
