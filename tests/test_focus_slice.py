@@ -142,3 +142,67 @@ def test_variable_defined_in_the_module_belongs_to_it_even_if_declared_in_an_out
             n["metadata"] = {"defined_in": "src/kku/kku.c"}   # ... but defined in the module
     res = slice_graph(g, ["src/kku/"])
     assert "V1" in _roles(res, "inside")
+
+
+# ---- graphify focus --function -------------------------------------------------------------
+
+import json
+
+from graphify.focus import resolve_function, run_focus
+
+
+def _with_dup(g):
+    g["nodes"] += [_n("a_c::Dup", "Dup()", "src/a/a.c"), _n("b_c::Dup", "Dup()", "src/b/b.c")]
+    return g
+
+
+def test_resolve_function_exact_name_and_ambiguity():
+    g = _graph()
+    assert resolve_function(g, "K1")[0] == "K1" and resolve_function(g, "K1()")[0] == "K1"
+    assert resolve_function(g, "src/kku/kku.c::K1")[0] == "K1"
+    assert resolve_function(g, "K")[0] is None, "a prefix must not match: exact names only"
+    assert resolve_function(g, "V1")[0] is None, "a variable is not a function"
+    g = _with_dup(g)
+    nid, msg = resolve_function(g, "Dup")
+    assert nid is None and msg.startswith("Ambiguous") and "src/a/a.c" in msg and "src/b/b.c" in msg
+    assert resolve_function(g, "src/b/::Dup")[0] == "b_c::Dup"
+    assert resolve_function(g, "a_c::Dup")[0] == "a_c::Dup", "a node id is always exact"
+
+
+def test_single_function_slice_has_no_other_inside_nodes_and_no_headers():
+    res = slice_graph(_graph(), [], flows=("calls", "data", "calibration"), seed_ids=["K1"])
+    assert _roles(res, "inside") == {"K1"}
+    assert _roles(res, "include") == set()
+    assert _roles(res, "border") == {"W1", "W2", "R1", "CA", "C1", "K2"}
+    assert _roles(res, "shared") >= {"V1", "V2"}
+
+
+def test_cli_function_option_writes_a_slice(tmp_path, capsys):
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(_graph()))
+    out = tmp_path / "out"
+    assert run_focus(["--function", "K1", "--graph", str(gp), "--out", str(out), "--depth", "1"]) == 0
+    sliced = json.loads((out / "graph.json").read_text())
+    roles = {n["id"]: n["focus_role"] for n in sliced["nodes"]}
+    assert roles["K1"] == "inside" and roles["CA"] == "border" and roles["W1"] == "border"
+    assert "kku_c" not in roles and "kku_h" not in roles
+    assert "focus ['K1']" in capsys.readouterr().out
+
+
+def test_cli_function_ambiguous_and_unknown(tmp_path, capsys):
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(_with_dup(_graph())))
+    assert run_focus(["--function", "Dup", "--graph", str(gp)]) == 1
+    assert "Ambiguous" in capsys.readouterr().out
+    assert run_focus(["--function", "Nope", "--graph", str(gp)]) == 0
+    assert "No function named 'Nope'" in capsys.readouterr().out
+    assert run_focus(["--function", "K1", "--flow", "all", "--graph", str(gp)]) == 1
+
+
+def test_cli_function_defaults_can_be_overridden(tmp_path):
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(_graph()))
+    out = tmp_path / "o"
+    run_focus(["--function", "K1", "--graph", str(gp), "--out", str(out), "--direction", "in", "--flow", "data"])
+    roles = {n["id"]: n["focus_role"] for n in json.loads((out / "graph.json").read_text())["nodes"]}
+    assert {"W1", "W2"} <= {i for i, r in roles.items() if r == "border"} and "R1" not in roles and "CA" not in roles

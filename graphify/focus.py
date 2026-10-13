@@ -240,26 +240,51 @@ def slice_graph(raw: dict, include, exclude=(), flows=("calls", "data"), directi
                        "stubs": [s["label"] for s in stubs]}}
 
 
+def resolve_function(raw: dict, query: str):
+    """Exact function lookup for ``--function``: ``name``, ``name()``, ``path/file.c::name`` or a node id.
+
+    Returns ``(node_id, None)`` or ``(None, message)``; several same-named functions in different
+    files are reported, never guessed."""
+    nodes = raw.get("nodes", [])
+    q = str(query).strip()
+    by_id = [n for n in nodes if n.get("id") == q and n.get("type") == "function"]
+    if by_id:
+        return by_id[0]["id"], None
+    path, _, name = q.rpartition("::")
+    strip = lambda t: _norm(t).removesuffix("()")
+    hits = [n for n in nodes if n.get("type") == "function" and strip(n.get("label")) == strip(name)
+            and (not path or _norm(path) in _norm(n.get("source_file")))]
+    if not hits:
+        return None, f"No function named '{name}'" + (f" in '{path}'" if path else "") + "."
+    if len(hits) > 1:
+        lines = "\n".join(f"  {h.get('source_file')}  id: {h['id']}" for h in hits[:15])
+        return None, (f"Ambiguous: '{name}' is {len(hits)} functions. "
+                      f"Retry with path::name or the node id:\n{lines}")
+    return hits[0]["id"], None
+
+
 def _load_config(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
 def run_focus(argv: list[str]) -> int:
-    usage = ('Usage: graphify focus "<path substring>" [--exclude P] [--flow calls,data,calibration|both|all]\n'
+    usage = ('Usage: graphify focus "<path substring>" | --function "<name | path::name | node id>"\n'
+             '         [--exclude P] [--flow calls,data,calibration|both|all]\n'
              '         [--direction in|out|both] [--depth N] [--fanout N] [--match path|label|both]\n'
              '         [--no-includes] [--config focus.json] [--graph PATH] [--out DIR]\n'
              '  e.g. graphify focus ku/kku --flow data --direction in\n'
+             '       graphify focus --function Kku_Main --depth 2   (one function; flow calls,data,calibration, both directions)\n'
              '  --flow all = legacy N-hop expansion over every relation (--max-degree applies)')
     if not argv or argv[0] in ("-h", "--help"):
         print(usage, file=sys.stderr)
         return 1
-    opts = {"include": [], "exclude": [], "flow": "both", "direction": "both", "depth": 1, "fanout": 30,
-            "match": "path", "includes": True, "graph": None, "out": None}
+    opts = {"include": [], "exclude": [], "flow": None, "direction": None, "depth": 1, "fanout": 30,
+            "match": "path", "includes": True, "graph": None, "out": None, "function": None}
     args = list(argv)
     cfg_path = next((args[i + 1] for i, a in enumerate(args) if a == "--config" and i + 1 < len(args)), None)
     if cfg_path:
         c = _load_config(cfg_path)
-        for k in ("exclude", "flow", "direction", "depth", "fanout", "match", "includes", "graph", "out"):
+        for k in ("exclude", "flow", "direction", "depth", "fanout", "match", "includes", "graph", "out", "function"):
             if k in c:
                 opts[k] = c[k]
         opts["include"] = list(c.get("include", []))
@@ -272,16 +297,19 @@ def run_focus(argv: list[str]) -> int:
             opts["exclude"].append(nxt); i += 1
         elif a == "--include" and nxt:
             opts["include"].append(nxt); i += 1
-        elif a in ("--flow", "--direction", "--match", "--graph", "--out") and nxt:
+        elif a in ("--flow", "--direction", "--match", "--graph", "--out", "--function") and nxt:
             opts[a[2:]] = nxt; i += 1
         elif a in ("--depth", "--fanout") and nxt:
             opts[a[2:]] = int(nxt); i += 1
         elif a == "--no-includes":
             opts["includes"] = False
         i += 1
-    if not opts["include"]:
-        print("error: give a path pattern or an 'include' list in --config\n" + usage, file=sys.stderr)
+    if not opts["include"] and not opts["function"]:
+        print("error: give a path pattern, --function, or an 'include' list in --config\n" + usage, file=sys.stderr)
         return 1
+    if opts["flow"] is None:      # a single function is understood through all three flows; a module through calls+data
+        opts["flow"] = "calls,data,calibration" if opts["function"] else "both"
+    opts["direction"] = opts["direction"] or "both"
     if opts["direction"] not in ("in", "out", "both") or opts["match"] not in ("path", "label", "both"):
         print("error: --direction must be in|out|both and --match path|label|both", file=sys.stderr)
         return 1
@@ -292,6 +320,9 @@ def run_focus(argv: list[str]) -> int:
     if flows - {"calls", "data", "calibration", "all"}:
         print(f"error: unknown --flow {sorted(flows - {'calls', 'data', 'calibration', 'all'})}", file=sys.stderr)
         return 1
+    if "all" in flows and opts["function"]:
+        print("error: --flow all (legacy) works on path patterns, not --function", file=sys.stderr)
+        return 1
     if "all" in flows:
         return _run_legacy([opts["include"][0]] + [a for a in args if a not in opts["include"]])
 
@@ -301,13 +332,20 @@ def run_focus(argv: list[str]) -> int:
         print(f"error: graph file not found: {gp}", file=sys.stderr)
         return 1
     raw = json.loads(gp.read_text(encoding="utf-8"))
+    seed_ids, what = None, opts["include"]
+    if opts["function"]:
+        fid, err = resolve_function(raw, opts["function"])
+        if err:
+            print(err)
+            return 1 if err.startswith("Ambiguous") else 0
+        seed_ids, what = [fid], [opts["function"]]
     res = slice_graph(raw, opts["include"], opts["exclude"], flows, opts["direction"], opts["depth"],
-                      opts["fanout"], opts["match"], opts["includes"])
+                      opts["fanout"], opts["match"], opts["includes"], seed_ids=seed_ids)
     if not res["seeds"]:
         print(f"No node with {opts['match']} containing {opts['include']}.")
         return 0
 
-    slug = re.sub(r"[^a-z0-9]+", "_", _norm(opts["include"][0])).strip("_") or "focus"
+    slug = re.sub(r"[^a-z0-9]+", "_", _norm(what[0])).strip("_") or "focus"
     out_dir = Path(opts["out"]) if opts["out"] else gp.parent / "focus" / slug
     out_dir.mkdir(parents=True, exist_ok=True)
     sub = {k: v for k, v in raw.items() if k not in ("nodes", "links", "edges")}
@@ -320,7 +358,7 @@ def run_focus(argv: list[str]) -> int:
 
     roles = Counter(res["roles"].values())
     rels = Counter(e.get("relation") for e in res["links"])
-    print(f"focus {opts['include']} flow={','.join(sorted(flows))} direction={opts['direction']} depth={opts['depth']}: "
+    print(f"focus {what} flow={','.join(sorted(flows))} direction={opts['direction']} depth={opts['depth']}: "
           f"{len(res['nodes'])} nodes / {len(res['links'])} edges")
     print("  nodes by role: " + ", ".join(f"{k}={v}" for k, v in roles.most_common()))
     print("  edges by relation: " + ", ".join(f"{k}={v}" for k, v in rels.most_common()))

@@ -280,3 +280,15 @@ A slice is a view of the finished full graph; nothing is re-parsed.
 | Variable without writer | says so (pointer write, inactive `#ifdef`, outside compile DB, external input) |
 | Read-modify-write | "also written by F itself" |
 | Callees | not shown (outputs, not inputs) |
+
+## 26. Slicing one function: `graphify focus --function` (2026-10-13)
+
+| Item | Behaviour |
+|---|---|
+| Command | `graphify focus --function "Kku_Main" [--depth N] [--flow ...] [--direction ...] [--fanout N] [--graph P] [--out DIR]` |
+| Selector | exact: `name`, `name()`, `path/file.c::name` or node id (no substring; a variable is not accepted) |
+| Ambiguous name | lists the candidates (file + id) and exits 1, never guesses |
+| Defaults | `--flow calls,data,calibration`, `--direction both`, `--depth 1` (a module keeps `calls,data`) |
+| Slice | inside = the function; shared = its variables/calibrations; border = callers, callees, writers, readers; no headers |
+| Output | same as module slicing: `graph.json`, `.graphify_labels.json`, `focus_report.json` (`graphify export html --graph ...`) |
+| Not supported | `--flow all` (legacy) with `--function` |
