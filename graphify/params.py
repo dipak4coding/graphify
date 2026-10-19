@@ -488,3 +488,131 @@ def run_params(argv: list) -> int:
         return 0
     print(f"error: unknown params command '{sub}'\n" + usage, file=sys.stderr)
     return 1
+
+
+# ---------------------------------------------------------------------------
+# coverage report: every parameter in A2L / PAR / CODE
+# ---------------------------------------------------------------------------
+
+def _norm_name(n: str) -> str:
+    return re.sub(r"\[[^\]]*\]", "", str(n)).replace(".", "_").replace("->", "_").lower()
+
+
+def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
+    """One row per parameter name seen in A2L, PAR or code.
+
+    A2L = characteristic or axis-points name in the A2L. PAR = entry in the .par (a bit
+    entry ``Parent.bitN`` counts for ``Parent``). CODE = a code node joined to that A2L name
+    (``metadata.a2l_characteristic_name`` / ``a2l_axis_pts_name``), or, for names the A2L does
+    not know, an unmatched ``calibration_field`` node."""
+    chars, axp = a2l.get("characteristics", {}), a2l.get("axis_pts", {})
+    a2l_kind = {**{n: "CHAR" for n in chars}, **{n: "AXIS" for n in axp}}
+    par_names = {}
+    for e in entries:
+        par_names.setdefault(e.parent if e.kind == "bit" else e.name, e)
+    code_by_a2l: dict = {}
+    code_only: dict = {}
+    code_keys: dict = {}              # normalised code key -> label, for near-miss hints
+    for n in nodes:
+        if n.get("type") not in ("variable", "calibration_field") or n.get("file_type") == "document":
+            continue
+        m = n.get("metadata") if isinstance(n.get("metadata"), dict) else {}
+        where = f"{n.get('label', '')} @ {n.get('source_file', '')}:{n.get('source_location', '')}".rstrip(":")
+        linked = [k for k in (m.get("a2l_characteristic_name"), m.get("a2l_axis_pts_name")) if k]
+        for k in linked:
+            code_by_a2l.setdefault(k, []).append(where)
+        key = m.get("calibration_path") or n.get("label")
+        if key and not linked:
+            code_keys.setdefault(_norm_name(key), key)
+            if n.get("type") == "calibration_field":
+                code_only.setdefault(key, []).append(where)
+    par_norm = {_norm_name(k): k for k in par_names}
+    a2l_norm = {_norm_name(k): k for k in a2l_kind}
+    rows = []
+    for name in sorted(set(a2l_kind) | set(par_names) | set(code_only)):
+        in_a2l, in_par = name in a2l_kind, name in par_names
+        where = code_by_a2l.get(name) or code_only.get(name) or []
+        in_code = bool(where)
+        notes = []
+        if in_a2l and not in_code:
+            sym = (chars.get(name) or axp.get(name) or {}).get("internal_symbol", "")
+            if sym:
+                notes.append(f"A2L symbol: {sym}")
+            hit = code_keys.get(_norm_name(sym or name))
+            if hit:
+                notes.append(f"code symbol '{hit}' looks the same (case/index differs) - join missed it")
+        if in_par and not in_a2l:
+            hit = a2l_norm.get(_norm_name(name))
+            if hit:
+                notes.append(f"A2L has '{hit}' (spelling differs)")
+        if in_code and not in_a2l:
+            hit = a2l_norm.get(_norm_name(name))
+            if hit:
+                notes.append(f"A2L has '{hit}' (spelling differs)")
+            elif name in par_names:
+                notes.append("in PAR but A2L has no entry")
+        if in_a2l and in_par and in_code:
+            status = "ok"
+        elif in_a2l and in_code:
+            status = "no value in PAR"
+        elif in_a2l and in_par:
+            status = "not found in code"
+        elif in_a2l:
+            status = "A2L only"
+        elif in_par and in_code:
+            status = "not in A2L"
+        elif in_par:
+            status = "PAR only"
+        else:
+            status = "code only"
+        rows.append({"name": name, "kind": a2l_kind.get(name, ""), "a2l": in_a2l, "par": in_par, "code": in_code,
+                     "status": status, "code_nodes": "; ".join(where[:3]) + (f" (+{len(where) - 3})" if len(where) > 3 else ""),
+                     "note": " | ".join(notes)})
+    return rows
+
+
+def write_coverage(out_dir, rows: list, dataset: str = "") -> dict:
+    """Write ``param_coverage.csv`` and ``param_coverage.json``; return status counts."""
+    import csv
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    cols = ["name", "kind", "a2l", "par", "code", "status", "code_nodes", "note"]
+    with open(out / "param_coverage.csv", "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow(cols)
+        for r in rows:
+            w.writerow([("yes" if r[c] else "no") if c in ("a2l", "par", "code") else r[c] for c in cols])
+    counts: dict = {}
+    for r in rows:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    totals = {"parameters": len(rows), "in_a2l": sum(r["a2l"] for r in rows), "in_par": sum(r["par"] for r in rows),
+              "in_code": sum(r["code"] for r in rows)}
+    (out / "param_coverage.json").write_text(
+        json.dumps({"dataset": dataset, "totals": totals, "by_status": counts, "rows": rows}, indent=1,
+                   ensure_ascii=False), encoding="utf-8")
+    return {"totals": totals, "by_status": counts, "csv": str(out / "param_coverage.csv")}
+
+
+def extraction_step(par_path, a2l, nodes: list, out_dir, name: str = "", db_path=None) -> dict:
+    """Used by the clang pass: import the .par into the databank, then write the coverage report.
+
+    ``a2l`` is the scanned A2L (``scan_a2l``) or None. Never raises on a bad .par."""
+    p = Path(par_path)
+    name = name or p.stem
+    text = _read_text(p)
+    entries, header, unparsed = parse_par(text)
+    rep, enrich = analyze(entries, a2l) if a2l else ({}, {})
+    db = Path(db_path) if db_path else Path(out_dir) / "params.db"
+    conn = open_db(db)
+    try:
+        import_dataset(conn, name, entries, {"source_file": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+                                             "header": header}, enrich)
+    finally:
+        conn.close()
+    res = {"dataset": name, "entries": len(entries), "unparsed": len(unparsed), "databank": str(db)}
+    if a2l:
+        res.update(write_coverage(out_dir, coverage_rows(a2l, entries, nodes), name))
+        res["import_checks"] = {k: len(v) for k, v in rep.items()}
+        (Path(out_dir) / f"params_import_{re.sub(r'[^A-Za-z0-9_.-]+', '_', name)}.json").write_text(
+            json.dumps(rep, indent=1, ensure_ascii=False), encoding="utf-8")
+    return res

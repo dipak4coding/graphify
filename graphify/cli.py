@@ -1064,7 +1064,7 @@ def _reenter_main() -> None:
 def _consume_clang_flags() -> None:
     """Strip --clang / --compile-commands X / --a2l X / --libclang X from sys.argv and
     hand them to the optional clang pass (see graphify/extractors/clang_c.py)."""
-    value_flags = {"--compile-commands": "compile_commands", "--a2l": "a2l", "--libclang": "libclang"}
+    value_flags = {"--compile-commands": "compile_commands", "--a2l": "a2l", "--libclang": "libclang", "--par": "par"}
     opts: dict = {}
     rest = [sys.argv[0]]
     args = sys.argv[1:]
@@ -1104,6 +1104,15 @@ def _consume_clang_flags() -> None:
                 sys.exit(2)
             opts[value_flags[name]] = str(Path(val).resolve())
             opts["enabled"] = True
+        elif name == "--par-name":
+            if eq:
+                opts["par_name"] = inline
+            elif i + 1 < len(args):
+                i += 1
+                opts["par_name"] = args[i]
+            else:
+                print("error: --par-name needs a value", file=sys.stderr)
+                sys.exit(2)
         else:
             rest.append(a)
         i += 1

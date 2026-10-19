@@ -122,3 +122,54 @@ def test_explain_inputs_prints_values(monkeypatch, tmp_path, capsys):
         assert exc.code == 0
     out = capsys.readouterr().out
     assert "calibration k_gain" in out and "Gain [FLOAT] = 1.5 km/h" in out
+
+
+def _nodes():
+    return [
+        {"id": "c1", "label": "k_gain", "type": "calibration_field", "source_file": "k.c", "source_location": "L3",
+         "metadata": {"a2l_characteristic_name": "Gain", "calibration_path": "k_gain"}},
+        {"id": "c2", "label": "k_orphan", "type": "calibration_field", "source_file": "k.c", "source_location": "L4",
+         "metadata": {"calibration_path": "k_orphan"}},
+        {"id": "v1", "label": "DUMMY_MAP", "type": "variable", "source_file": "k.c", "source_location": "L5",
+         "metadata": {"calibration_path": "DUMMY_MAP"}},
+        {"id": "doc", "label": "Gain", "type": "a2l_characteristic", "file_type": "document", "metadata": {}},
+    ]
+
+
+def test_coverage_rows_three_columns_and_status():
+    a2l = json.loads(json.dumps(A2L))
+    a2l["characteristics"]["Dummy_Map"]["internal_symbol"] = "Dummy_Map"
+    entries, _, _ = params.parse_par(PAR)
+    rows = {r["name"]: r for r in params.coverage_rows(a2l, entries, _nodes())}
+    assert (rows["Gain"]["a2l"], rows["Gain"]["par"], rows["Gain"]["code"], rows["Gain"]["status"]) == (True, True, True, "ok")
+    assert rows["Mode"]["status"] == "not found in code"
+    assert rows["Sw"]["par"] is True and rows["Sw"]["status"] == "not found in code"      # bits count for the parent
+    assert rows["Lonely"]["status"] == "A2L only"
+    assert rows["Extra"]["status"] == "PAR only"
+    assert rows["k_orphan"]["status"] == "code only" and rows["k_orphan"]["code"] is True
+    assert "looks the same" in rows["Dummy_Map"]["note"]       # code DUMMY_MAP vs A2L Dummy_Map: join missed it
+    assert rows["Ax_X"]["kind"] == "AXIS"
+
+
+def test_extraction_step_writes_databank_and_reports(tmp_path):
+    par = tmp_path / "a.par"
+    par.write_text(PAR, encoding="utf-8")
+    out = tmp_path / "out"
+    r = params.extraction_step(str(par), A2L, _nodes(), out, "setA")
+    assert r["totals"]["in_par"] == 7 and (out / "params.db").is_file()
+    csv_text = (out / "param_coverage.csv").read_text(encoding="utf-8-sig")
+    assert csv_text.startswith("name;kind;a2l;par;code;status") and "Gain;CHAR;yes;yes;yes;ok" in csv_text
+    assert (out / "param_coverage.json").is_file() and (out / "params_import_setA.json").is_file()
+    # without an A2L the values are stored but no coverage report is written
+    r2 = params.extraction_step(str(par), None, _nodes(), tmp_path / "out2", "setB")
+    assert "csv" not in r2 and (tmp_path / "out2" / "params.db").is_file()
+
+
+def test_cli_consumes_par_flags(monkeypatch):
+    from graphify import cli
+    from graphify.extractors import clang_c
+    monkeypatch.setattr(cli.sys, "argv", ["graphify", "update", ".", "--par", "x.par", "--par-name", "setZ"])
+    seen = {}
+    monkeypatch.setattr(clang_c, "set_runtime_config", lambda **kw: seen.update(kw))
+    cli._consume_clang_flags()
+    assert seen["par_name"] == "setZ" and seen["par"].endswith("x.par") and cli.sys.argv == ["graphify", "update", "."]

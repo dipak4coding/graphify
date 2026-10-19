@@ -70,6 +70,8 @@ class ClangConfig:
     compile_commands: str | None = None  # path to compile_commands.json
     libclang: str | None = None  # path to libclang shared library (optional)
     a2l: str | None = None  # path to the .a2l calibration file (optional)
+    par: str | None = None  # path to a .par parameter-value file (optional; needs a2l for the coverage report)
+    par_name: str | None = None  # dataset name for the .par (default: file name)
     scope: list = field(default_factory=list)  # substrings; limits ADDED clang-only nodes
     extra_args: list = field(default_factory=list)  # fallback clang args (-I.., -include ..)
     register_functions: list = field(
@@ -101,7 +103,7 @@ def set_runtime_config(**kwargs) -> None:
 
 def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
     cfg = ClangConfig(base_dir=str(base_dir))
-    for key in ("enabled", "compile_commands", "libclang", "a2l", "debug", "header_declarations"):
+    for key in ("enabled", "compile_commands", "libclang", "a2l", "par", "par_name", "debug", "header_declarations"):
         if key in data:
             setattr(cfg, key, data[key])
     if "extractor" in data:
@@ -127,7 +129,7 @@ def _override() -> dict:
 
 def _apply_override(cfg: ClangConfig, ov: dict) -> ClangConfig:
     """CLI/env wins over the config file; absolute paths from the CLI need no base_dir."""
-    for key in ("compile_commands", "libclang", "a2l", "extractor", "debug"):
+    for key in ("compile_commands", "libclang", "a2l", "par", "par_name", "extractor", "debug"):
         if key in ov:
             setattr(cfg, key, ov[key])
     if "enabled" in ov:
@@ -1492,6 +1494,7 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
         stats["ptr_to_rom"] = len(ex.ptr_to_rom)
 
     a2l_path = cfg.resolve(cfg.a2l)
+    a2l_parsed = None
     if a2l_path is not None:
         if not a2l_path.is_file():
             _warn_once("noa2l", f"A2L file not found: {a2l_path}")
@@ -1502,7 +1505,7 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
                 rel = a2l_path.resolve().relative_to(root).as_posix()
             except ValueError:
                 rel = str(a2l_path.resolve())
-            parsed = scan_a2l(str(a2l_path))
+            parsed = a2l_parsed = scan_a2l(str(a2l_path))
             LOG.info("A2L parsed: %d measurements, %d characteristics, %d axis_pts",
                      len(parsed.get("measurements", {})), len(parsed.get("characteristics", {})),
                      len(parsed.get("axis_pts", {})))
@@ -1512,6 +1515,29 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
                 LOG.debug("code calibration fields with NO A2L match: %s", stats["a2l"]["unmatched_code"])
             if stats["a2l"].get("unmatched_a2l"):
                 LOG.debug("A2L characteristics NOT matched by any code symbol: %s", stats["a2l"]["unmatched_a2l"])
+
+    par_path = cfg.resolve(cfg.par)
+    if par_path is not None:
+        if not par_path.is_file():
+            _warn_once("nopar", f".par file not found: {par_path}")
+            LOG.error(".par file not found: %s", par_path)
+        else:
+            try:
+                from graphify.paths import out_path
+                from graphify.params import extraction_step
+                out = out_path()
+                out = out if out.is_absolute() else root / out
+                if a2l_parsed is None:
+                    _warn_once("parnoa2l", "--par given without --a2l: values are stored, but the "
+                                           "A2L/PAR/code coverage report needs the A2L too.")
+                stats["par"] = extraction_step(par_path, a2l_parsed, all_nodes, out, cfg.par_name or "")
+                t = stats["par"].get("totals")
+                print(f"[graphify] parameters: dataset '{stats['par']['dataset']}', {stats['par']['entries']} entries"
+                      + (f" | A2L {t['in_a2l']}, PAR {t['in_par']}, code {t['in_code']} of {t['parameters']} names; "
+                         f"{stats['par']['by_status']} -> {stats['par']['csv']}" if t else ""), file=sys.stderr)
+            except Exception as exc:  # never break the extraction for the parameter step
+                _warn_once("parfail", f"parameter step failed: {exc}")
+                LOG.exception("parameter step failed")
 
     a2l = stats.get("a2l") or {}
     if c_files and not stats.get("files"):

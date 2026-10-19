@@ -306,3 +306,17 @@ A slice is a view of the finished full graph; nothing is re-parsed.
 | Compare | Not built yet (later: `params diff`, numeric by physical value, enum by raw + label change) |
 | Assumptions | Row-major map order (checked only through the axis counts); raw first, physical second; no string parameters |
 | Not static | Writes through pointers, inactive `#ifdef` code, files outside the compile DB |
+
+## 28. `--par` in the extraction flow + A2L / PAR / code coverage report
+
+| Item | Detail |
+|---|---|
+| Flags | `graphify update . --clang --a2l X.a2l --par X.par [--par-name SET]` (also keys `par`, `par_name` in `graphify-clang.json`) |
+| Step | after the A2L join the `.par` is imported into `graphify-out/params.db`; failures only warn, extraction never breaks |
+| Report | `graphify-out/param_coverage.csv` (`;`-separated, Excel-ready) + `param_coverage.json` + `params_import_<SET>.json` |
+| Columns | name, kind (CHAR/AXIS), A2L yes/no, PAR yes/no, CODE yes/no, status, code nodes, note |
+| CODE means | a code node joined to the A2L name (`a2l_characteristic_name` / `a2l_axis_pts_name`), or an unmatched `calibration_field` for names the A2L lacks |
+| PAR means | entry in the `.par`; `Parent.bitN` counts for `Parent` |
+| Status | ok / no value in PAR / not found in code / A2L only / not in A2L / PAR only / code only |
+| Notes | A2L symbol the code should contain; "looks the same (case/index differs) - join missed it"; "A2L has 'X' (spelling differs)" |
+| Needs | the coverage report needs `--a2l` as well; without it only the values are stored (warning) |
