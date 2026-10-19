@@ -29,7 +29,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-_ENTRY = re.compile(r"^(?P<name>[^\s\[\]:;]+)\s*\[(?P<spec>[^\]]*)\]\s*:?\s*(?P<rest>.*)$")
+# name may itself contain index brackets (variable_ko[3]); the type spec is the bracket group that is
+# followed by the first value (or by nothing). Non-greedy name + backtracking finds it.
+_ENTRY = re.compile(r"^(?P<name>[^\s:;]\S*?)\s*\[(?P<spec>[^\]]*)\]\s*:?\s*(?P<rest>(?:[-+.\d].*)?)$")
 _CONT = re.compile(r"^:\s*(?P<rest>.*)$")
 _SHAPE = re.compile(r",\s*\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)")
 _BIT = re.compile(r"^(?P<parent>.+)\.bit(?P<bit>\d+)$", re.IGNORECASE)
@@ -83,6 +85,20 @@ def _pair(rest: str):
     return raw, (n if n is not None else phys_s.strip('"'))
 
 
+def _pairs(rest: str):
+    """One line may carry several values separated by ':' (``0 ; 0 : 100 ; 10``). -> list of
+    (raw, phys), or None when any piece is not a ``raw ; physical`` pair."""
+    pieces = [x for x in rest.split(":") if x.strip()]
+    out = []
+    for piece in pieces:
+        p = _pair(piece)
+        if p is None:
+            one = _pair(rest)           # ':' may belong to a text value; try the line as one pair
+            return [one] if one is not None else None
+        out.append(p)
+    return out or None
+
+
 def _finish(e: Entry) -> Entry:
     m = _BIT.match(e.name)
     if m:
@@ -108,18 +124,16 @@ def parse_par(text: str):
         s = line.strip()
         if not s:
             continue
-        m = _CONT.match(s)
-        if m and cur is not None:
-            p = _pair(m["rest"])
-            if p is None:
-                unparsed.append((ln, s))
-            else:
-                cur.raw.append(p[0])
-                cur.phys.append(p[1])
-            continue
         m = _ENTRY.match(s)
-        p = _pair(m["rest"]) if m else None
-        if m and (p is not None or not m["rest"].strip()):
+        if m is None and cur is not None:
+            c = _CONT.match(s)
+            ps = _pairs(c["rest"] if c else s)          # continuation: ': raw ; phys' or just 'raw ; phys'
+            if ps is not None:
+                for r_, p_ in ps:
+                    cur.raw.append(r_)
+                    cur.phys.append(p_)
+                continue
+        if m:
             spec = m["spec"]
             sm = _SHAPE.search(spec)
             rows, cols = 1, 1
@@ -127,11 +141,13 @@ def parse_par(text: str):
                 rows, cols = (int(sm.group(1)), int(sm.group(2))) if sm.group(2) else (1, int(sm.group(1)))
             cur = Entry(name=m["name"], dtype=_SHAPE.sub("", spec).strip(), rows=rows, cols=cols, line=ln)
             entries.append(cur)
-            if p is not None:
-                cur.raw.append(p[0])
-                cur.phys.append(p[1])
+            for r_, p_ in (_pairs(m["rest"]) or []):
+                cur.raw.append(r_)
+                cur.phys.append(p_)
+        elif not entries:
+            header.append(s)
         else:
-            (header if not entries else unparsed).append(s if not entries else (ln, s))
+            unparsed.append((ln, s))
     return [_finish(e) for e in entries], header, unparsed
 
 
@@ -155,6 +171,9 @@ def analyze(entries: list, a2l: dict):
 
     for e in entries:
         key = e.name if e.name in chars else (e.parent if e.parent in chars else None)
+        if key is None:
+            bare = re.sub(r"\[[^\]]*\]", "", e.name)       # variable_ko[3] -> variable_ko
+            key = bare if bare in chars else None
         if key is None:
             if e.name in axp:
                 cm = cms.get(axp[e.name].get("compu_method", ""), {})

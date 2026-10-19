@@ -173,3 +173,24 @@ def test_cli_consumes_par_flags(monkeypatch):
     monkeypatch.setattr(clang_c, "set_runtime_config", lambda **kw: seen.update(kw))
     cli._consume_clang_flags()
     assert seen["par_name"] == "setZ" and seen["par"].endswith("x.par") and cli.sys.argv == ["graphify", "update", "."]
+
+
+def test_names_with_index_and_flexible_value_layout():
+    text = ("variable_ko[3] [FLOAT]  2.5 ; 2.5\n"
+            "arr[x][INT(16)]  7 ; 7\n"
+            "Curve_A [INT(16),(1,4)]  0 ; 0 :  100 ; 10 :  200 ; 20 :  300 ; 30\n"
+            "Curve_B [INT(16),(1,4)]  0 ; 0\n"
+            "  100 ; 10\n"
+            ":  200 ; 20\n"
+            "300 ; 30\n"
+            "Curve_C [INT(16),(4)]  1 ; 1 : 2 ; 2 : 3 ; 3 : 4 ; 4\n")
+    entries, _, unparsed = params.parse_par(text)
+    by = {e.name: e for e in entries}
+    assert set(by) == {"variable_ko[3]", "arr[x]", "Curve_A", "Curve_B", "Curve_C"} and not unparsed
+    assert by["variable_ko[3]"].dtype == "FLOAT" and by["arr[x]"].phys == [7]
+    for n in ("Curve_A", "Curve_B"):
+        assert by[n].phys == [0, 10, 20, 30] and not by[n].issues and by[n].kind == "curve"
+    assert (by["Curve_C"].rows, by["Curve_C"].cols) == (1, 4) and not by["Curve_C"].issues
+    a2l = {"characteristics": {"variable_ko": {"char_type": "VALUE", "axis_references": []}}}
+    rep, _ = params.analyze(entries, a2l)
+    assert "variable_ko[3]" not in rep["not_in_a2l"]
