@@ -31,9 +31,10 @@ from pathlib import Path
 
 # name may itself contain index brackets (variable_ko[3]); the type spec is the bracket group that is
 # followed by the first value (or by nothing). Non-greedy name + backtracking finds it.
-_ENTRY = re.compile(r"^(?P<name>[^\s:;]\S*?)\s*\[(?P<spec>[^\]]*)\]\s*:?\s*(?P<rest>(?:[-+.\d].*)?)$")
+_ENTRY = re.compile(r"^(?P<name>[^\s:;]\S*?)\s*\[(?P<spec>[^\]]*)\]\s*:?\s*(?P<rest>(?:(?:[-+]?\d|\.\d).*)?)$")
 _CONT = re.compile(r"^:\s*(?P<rest>.*)$")
 _SHAPE = re.compile(r",\s*\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)")
+_ONE_BIT = re.compile(r"^U?INT\(1\)$", re.IGNORECASE)
 _BIT = re.compile(r"^(?P<parent>.+)\.bit(?P<bit>\d+)$", re.IGNORECASE)
 MAX_LIST = 200   # findings per category kept in the import report
 
@@ -103,6 +104,8 @@ def _finish(e: Entry) -> Entry:
     m = _BIT.match(e.name)
     if m:
         e.kind, e.parent, e.bit = "bit", m["parent"], int(m["bit"])
+    elif _ONE_BIT.match(e.dtype) and "." in e.name and e.rows * e.cols == 1:
+        e.kind, e.parent = "bit", e.name.rsplit(".", 1)[0]     # struct bit member: Arr[DS].Member [UINT(1)]
     elif any(isinstance(p, str) for p in e.phys):
         e.kind = "enum"
     elif e.rows * e.cols == 1:
@@ -160,6 +163,27 @@ def _normkey(k):
     return (str(int(n)) if isinstance(n, float) and n.is_integer() else str(n)) if n is not None else str(k)
 
 
+def a2l_candidates(e) -> list:
+    """Names under which the A2L may know a .par entry, most specific first."""
+    strip = lambda t: re.sub(r"\[[^\]]*\]", "", t)
+    out = [e.name, strip(e.name)]
+    if e.kind == "bit":
+        out += [e.parent, strip(e.parent)]
+    seen, res = set(), []
+    for c in out:
+        if c and c not in seen:
+            seen.add(c)
+            res.append(c)
+    return res
+
+
+def a2l_key_for(e, chars: dict, axp: dict):
+    for c in a2l_candidates(e):
+        if c in chars or c in axp:
+            return c
+    return None
+
+
 def analyze(entries: list, a2l: dict):
     """Cross-check entries against a scanned A2L. -> (report parts, {name: enrichment})."""
     chars, axp = a2l.get("characteristics", {}), a2l.get("axis_pts", {})
@@ -170,13 +194,11 @@ def analyze(entries: list, a2l: dict):
     expect_kind = {"VALUE": {"scalar", "enum", "bit"}, "CURVE": {"curve"}, "MAP": {"map"}}
 
     for e in entries:
-        key = e.name if e.name in chars else (e.parent if e.parent in chars else None)
+        k2 = a2l_key_for(e, chars, axp)
+        key = k2 if k2 in chars else None
         if key is None:
-            bare = re.sub(r"\[[^\]]*\]", "", e.name)       # variable_ko[3] -> variable_ko
-            key = bare if bare in chars else None
-        if key is None:
-            if e.name in axp:
-                cm = cms.get(axp[e.name].get("compu_method", ""), {})
+            if k2 in axp:
+                cm = cms.get(axp[k2].get("compu_method", ""), {})
                 enrich[e.name] = {"char_type": "AXIS_PTS", "unit": cm.get("unit", ""), "axes": []}
             else:
                 rep["not_in_a2l"].append(e.name)
@@ -528,7 +550,8 @@ def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
     a2l_kind = {**{n: "CHAR" for n in chars}, **{n: "AXIS" for n in axp}}
     par_names = {}
     for e in entries:
-        par_names.setdefault(e.parent if e.kind == "bit" else e.name, e)
+        k = a2l_key_for(e, chars, axp)
+        par_names.setdefault(k or (e.parent if e.kind == "bit" and _BIT.match(e.name) else e.name), e)
     code_by_a2l: dict = {}
     code_only: dict = {}
     code_keys: dict = {}              # normalised code key -> label, for near-miss hints

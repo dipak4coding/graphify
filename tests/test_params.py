@@ -194,3 +194,28 @@ def test_names_with_index_and_flexible_value_layout():
     a2l = {"characteristics": {"variable_ko": {"char_type": "VALUE", "axis_references": []}}}
     rep, _ = params.analyze(entries, a2l)
     assert "variable_ko[3]" not in rep["not_in_a2l"]
+
+
+STRUCT = """\
+KusLC_AuswTasteBetaetigt_ko[DS].Keine [UINT(1)]  1 ; Ja
+KusLC_AuswTasteBetaetigt_ko[DS].LenkradBeide [UINT(1)]  0 ; Nein
+KusLC_AuswTasteBetaetigt_ko[TT].Keine [UINT(1)]  1 ; Ja
+KusLC_AuswTasteBetaetigt_ko[TT].LenkradBeide [UINT(1)]  0 ; Nein
+"""
+
+
+def test_array_of_bit_structs_parsed_and_linked():
+    entries, _, unparsed = params.parse_par(STRUCT)
+    assert not unparsed and len(entries) == 4
+    e = entries[0]
+    assert e.name == "KusLC_AuswTasteBetaetigt_ko[DS].Keine" and e.dtype == "UINT(1)"
+    assert (e.raw, e.phys, e.kind, e.parent) == ([1], ["Ja"], "bit", "KusLC_AuswTasteBetaetigt_ko[DS]")
+    # A2L variant 1: one characteristic per member, without the index
+    a2l = {"characteristics": {"KusLC_AuswTasteBetaetigt_ko.Keine": {"char_type": "VALUE"},
+                               "KusLC_AuswTasteBetaetigt_ko.LenkradBeide": {"char_type": "VALUE"}}}
+    rep, enrich = params.analyze(entries, a2l)
+    assert rep["not_in_a2l"] == [] and rep["a2l_without_value"] == []
+    # A2L variant 2: full name incl. index
+    a2l2 = {"characteristics": {"KusLC_AuswTasteBetaetigt_ko[DS].Keine": {"char_type": "VALUE"}}}
+    rep2, _ = params.analyze(entries, a2l2)
+    assert "KusLC_AuswTasteBetaetigt_ko[DS].Keine" not in rep2["not_in_a2l"] and len(rep2["not_in_a2l"]) == 3
