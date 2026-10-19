@@ -563,6 +563,8 @@ def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
         linked = [k for k in (m.get("a2l_characteristic_name"), m.get("a2l_axis_pts_name")) if k]
         for k in linked:
             code_by_a2l.setdefault(k, []).append(where)
+        for k in m.get("a2l_members") or []:
+            code_by_a2l.setdefault(k, []).append(f"{where} [struct: member not tracked]")
         key = m.get("calibration_path") or n.get("label")
         if key and not linked:
             code_keys.setdefault(_norm_name(key), key)

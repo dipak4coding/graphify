@@ -14,6 +14,7 @@ from collections import defaultdict
 from graphify.focus import READ, WRITE, CALL, slice_graph
 
 CAL_READ = "reads_calibration_field"
+MAX_STRUCT_VALUES = 12
 MAX_WRITERS = 10
 MAX_CALLERS = 8
 NO_WRITER = "no writer found (pointer write, inactive #ifdef, file outside the compile DB, or external input)"
@@ -90,7 +91,15 @@ def inputs_report(raw: dict, nid: str, depth: int = 1, fanout: int = 30, budget:
             return []
         m = nodes[i].get("metadata") if isinstance(nodes[i].get("metadata"), dict) else {}
         key = m.get("a2l_characteristic_name") or m.get("a2l_axis_pts_name")
-        return list(values(key)) if key else []
+        if key:
+            return list(values(key))
+        members = m.get("a2l_members") or []          # struct variable: show the members' values
+        out = []
+        for k in members[:MAX_STRUCT_VALUES]:
+            out.extend(values(k))
+        if len(members) > MAX_STRUCT_VALUES:
+            out.append(f"      ... +{len(members) - MAX_STRUCT_VALUES} more members (graphify params show NAME)")
+        return out
 
     def block(fn: str) -> list:
         lines = []

@@ -490,6 +490,9 @@ def scan_a2l(a2l_path: str) -> dict:
 MAX_IMPLICIT_INDEX_DEPTH = 4  # up to a 4D table
 
 
+MAX_STRUCT_MEMBERS = 200   # member names kept on the struct variable node
+
+
 def resolve_a2l_key(join_key: str, table: dict):
     """Exact key first, then APPEND ``[0]``... (whole-table code access vs indexed
     A2L symbol), then STRIP trailing indices (loop-expanded code access vs bare
@@ -612,6 +615,27 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
             by_id[axis_id] = node
         return axis_id
 
+    def _char_node(cname: str, cobj: dict, ckey: str) -> str:
+        char_id = make_id("a2lchar", cname)
+        if char_id not in by_id:
+            cnode = {
+                "id": char_id, "label": cname, "file_type": "document", "type": "a2l_characteristic",
+                "source_file": a2l_source_file,
+                "metadata": {
+                    "source_extractor": "a2l",
+                    "char_type": cobj.get("char_type", ""),
+                    "min": cobj.get("min_value"), "max": cobj.get("max_value"),
+                    "internal_symbol": ckey,
+                },
+            }
+            _add_rationale(cnode, cobj.get("description", ""))
+            nodes.append(cnode)
+            by_id[char_id] = cnode
+            for i, axis_name in enumerate(cobj.get("axis_references") or []):
+                axis_id = _axis_node(axis_name, axis_pts.get(axis_name))
+                _edge(char_id, axis_id, _axis_relation_name(cobj.get("char_type", ""), i))
+        return char_id
+
     for node in [n for n in nodes if n.get("type") in ("variable", "calibration_field")]:
         meta = node.setdefault("metadata", {})
         join_key = meta.get("calibration_path") or node.get("label")
@@ -636,24 +660,7 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
             if cfb:
                 meta["a2l_implicit_index_fallback"] = True
                 stats["fallback"] += 1
-            char_id = make_id("a2lchar", cname)
-            if char_id not in by_id:
-                cnode = {
-                    "id": char_id, "label": cname, "file_type": "document", "type": "a2l_characteristic",
-                    "source_file": a2l_source_file,
-                    "metadata": {
-                        "source_extractor": "a2l",
-                        "char_type": cobj.get("char_type", ""),
-                        "min": cobj.get("min_value"), "max": cobj.get("max_value"),
-                        "internal_symbol": ckey,
-                    },
-                }
-                _add_rationale(cnode, cobj.get("description", ""))
-                nodes.append(cnode)
-                by_id[char_id] = cnode
-                for i, axis_name in enumerate(cobj.get("axis_references") or []):
-                    axis_id = _axis_node(axis_name, axis_pts.get(axis_name))
-                    _edge(char_id, axis_id, _axis_relation_name(cobj.get("char_type", ""), i))
+            char_id = _char_node(cname, cobj, ckey)
             # description also on the code node, so "oil temperature threshold" finds it
             _add_rationale(node, cobj.get("description", ""))
             rng = _fmt_range(cobj.get("min_value"), cobj.get("max_value"))
@@ -673,6 +680,33 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
             _add_rationale(node, aobj.get("description", ""))
             _edge(node["id"], axis_id, "mapped_to_a2l_axis_pts")
             stats["axis_pts"] += 1
+
+    # Struct calibration variables: the code has the struct (`variable_ko`), the A2L has its members
+    # (`variable_ko.x`, `variable_ko[DS].Keine`). Member accesses are not separate code nodes, so
+    # link the struct variable to every A2L characteristic below it.
+    roots: dict = {}
+    for ckey, (cname, cobj) in sym_to_char.items():
+        if ckey not in matched_chars:
+            root = re.split(r"[.\[]", ckey, maxsplit=1)[0]
+            if root != ckey:
+                roots.setdefault(root, []).append((ckey, cname, cobj))
+    stats["struct_members"] = 0
+    for node in [n for n in nodes if n.get("type") == "variable"]:
+        meta = node.setdefault("metadata", {})
+        if meta.get("a2l_characteristic_name") or meta.get("a2l_axis_pts_name"):
+            continue
+        members = roots.get(meta.get("calibration_path") or node.get("label"))
+        if not members:
+            continue
+        names = []
+        for ckey, cname, cobj in members:
+            matched_chars.add(ckey)
+            _edge(node["id"], _char_node(cname, cobj, ckey), "mapped_to_a2l_characteristic")
+            names.append(cname)
+        meta["a2l_members"] = sorted(names)[:MAX_STRUCT_MEMBERS]
+        meta["a2l_member_count"] = len(names)
+        stats["struct_members"] += len(names)
+        stats["struct_variables"] = stats.get("struct_variables", 0) + 1
 
     for node in nodes:
         m = node.get("metadata") or {}

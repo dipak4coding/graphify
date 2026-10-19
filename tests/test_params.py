@@ -219,3 +219,22 @@ def test_array_of_bit_structs_parsed_and_linked():
     a2l2 = {"characteristics": {"KusLC_AuswTasteBetaetigt_ko[DS].Keine": {"char_type": "VALUE"}}}
     rep2, _ = params.analyze(entries, a2l2)
     assert "KusLC_AuswTasteBetaetigt_ko[DS].Keine" not in rep2["not_in_a2l"] and len(rep2["not_in_a2l"]) == 3
+
+
+def test_struct_variable_links_to_member_characteristics():
+    from graphify.extractors.a2l import join_a2l
+    a2l = {"measurements": {}, "compu_methods": {}, "compu_vtabs": {}, "axis_pts": {},
+           "characteristics": {
+               "variable_ko.x": {"char_type": "VALUE", "internal_symbol": "variable_ko.x"},
+               "variable_ko.y": {"char_type": "VALUE", "internal_symbol": "variable_ko.y"},
+               "other.z": {"char_type": "VALUE", "internal_symbol": "other.z"}}}
+    nodes = [{"id": "v", "label": "variable_ko", "type": "variable", "source_file": "k.c", "metadata": {}}]
+    edges: list = []
+    stats = join_a2l(nodes, edges, a2l, "x.a2l")
+    meta = nodes[0]["metadata"]
+    assert meta["a2l_members"] == ["variable_ko.x", "variable_ko.y"] and stats["struct_members"] == 2
+    assert stats["unmatched_a2l"] == ["other.z"]
+    assert sum(e["relation"] == "mapped_to_a2l_characteristic" and e["source"] == "v" for e in edges) == 2
+    rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
+    assert rows["variable_ko.x"]["code"] is True and "struct" in rows["variable_ko.x"]["code_nodes"]
+    assert rows["other.z"]["code"] is False

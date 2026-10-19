@@ -320,3 +320,15 @@ A slice is a view of the finished full graph; nothing is re-parsed.
 | Status | ok / no value in PAR / not found in code / A2L only / not in A2L / PAR only / code only |
 | Notes | A2L symbol the code should contain; "looks the same (case/index differs) - join missed it"; "A2L has 'X' (spelling differs)" |
 | Needs | the coverage report needs `--a2l` as well; without it only the values are stored (warning) |
+
+## 29. Struct calibration variables (A2L `variable_ko.x`, `variable_ko.y`)
+
+| Item | Detail |
+|---|---|
+| Cause | Code has the struct variable `variable_ko`; the A2L has its members as separate characteristics. Member accesses on a struct that is not a registered calibration pointer are not code nodes, so the exact-name join found nothing |
+| Fix | `join_a2l` links a still-unmatched `variable` node to every A2L characteristic whose symbol starts with `<name>.` or `<name>[` (edge `mapped_to_a2l_characteristic`) |
+| Node metadata | `a2l_members` (up to 200 names), `a2l_member_count` |
+| Stats | `struct_variables`, `struct_members`; these characteristics no longer appear in `unmatched_a2l` |
+| Coverage report | CODE = yes, `code_nodes` shows `[struct: member not tracked]` |
+| `explain --inputs --dataset` | a struct variable prints the values of up to 12 members |
+| Limit | Which member a function reads is not known (member-level tracking would need the member path on the `reads_var` edge) |
