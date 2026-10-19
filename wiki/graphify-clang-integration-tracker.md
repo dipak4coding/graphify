@@ -292,3 +292,17 @@ A slice is a view of the finished full graph; nothing is re-parsed.
 | Slice | inside = the function; shared = its variables/calibrations; border = callers, callees, writers, readers; no headers |
 | Output | same as module slicing: `graph.json`, `.graphify_labels.json`, `focus_report.json` (`graphify export html --graph ...`) |
 | Not supported | `--flow all` (legacy) with `--function` |
+
+## 27. Parameter databank (first prototype: one dataset)
+
+| Item | Detail |
+|---|---|
+| Module | `graphify/params.py` - `.par` parser, SQLite databank (`params.db` next to `graph.json`), printing |
+| Link key | A2L characteristic name = `metadata.a2l_characteristic_name` (axes via A2L `axis_references`, bits via parent + `.bitN`) |
+| Import | `graphify params import FILE.par --name SET [--a2l FILE.a2l\|.json] [--project --variant --version] [--db PATH]` |
+| Import report | `params_import_<SET>.json`: not_in_a2l, a2l_without_value, kind_vs_a2l, axis_missing, shape_vs_axis (rows = Y axis, cols = X axis), enum_issues (label vs `COMPU_VTAB`), unparsed lines, duplicates |
+| Show | `graphify params show NAME [--dataset SET]`, `graphify params list` |
+| AI output | `graphify explain F --inputs --dataset SET` prints the value under each calibration; scalar/enum 1 line, curve/map as table with axis values up to 64 cells, larger as summary + fetch hint |
+| Compare | Not built yet (later: `params diff`, numeric by physical value, enum by raw + label change) |
+| Assumptions | Row-major map order (checked only through the axis counts); raw first, physical second; no string parameters |
+| Not static | Writes through pointers, inactive `#ifdef` code, files outside the compile DB |

@@ -1127,6 +1127,9 @@ def dispatch_command(cmd: str) -> None:
             _rest = [a for k, a in enumerate(_argv) if k not in (_i, _i + 1)]
             sys.exit(check_file(Path(_rest[0]) if _rest else Path("."), _file))
         sys.exit(check_setup(Path(sys.argv[2]) if len(sys.argv) > 2 else None))
+    if cmd == "params":
+        from graphify.params import run_params
+        sys.exit(run_params(sys.argv[2:]))
     if cmd == "focus":
         from graphify.focus import run_focus
         sys.exit(run_focus(sys.argv[2:]))
@@ -1797,7 +1800,7 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--graph path] [--inputs [--depth N] [--fanout N] [--budget N]]',
+            print('Usage: graphify explain "<node>" [--graph path] [--inputs [--depth N] [--fanout N] [--budget N]] [--dataset NAME] [--db PATH]',
                   file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _find_node, find_node_ambiguity
@@ -1808,9 +1811,14 @@ def dispatch_command(cmd: str) -> None:
         args = sys.argv[3:]
         inputs_mode = "--inputs" in args
         opt = {"--depth": 1, "--fanout": 30, "--budget": 2000}
+        ds_name, db_arg = None, None
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+            elif a == "--dataset" and i + 1 < len(args):
+                ds_name = args[i + 1]
+            elif a == "--db" and i + 1 < len(args):
+                db_arg = args[i + 1]
             elif a in opt and i + 1 < len(args):
                 try:
                     opt[a] = int(args[i + 1])
@@ -1852,8 +1860,21 @@ def dispatch_command(cmd: str) -> None:
         if inputs_mode:
             if d.get("type") == "function":
                 from graphify.inputs import inputs_report
+                _values = None
+                if ds_name is not None or db_arg is not None:
+                    from graphify import params as _params
+                    try:
+                        _conn = _params.open_db(db_arg or _params.default_db_path(gp), create=False)
+                    except FileNotFoundError as exc:
+                        print(f"error: {exc}", file=sys.stderr)
+                        sys.exit(1)
+                    _ds, _err = _params.resolve_dataset(_conn, ds_name)
+                    if _err:
+                        print(_err, file=sys.stderr)
+                        sys.exit(1)
+                    _values = _params.make_lookup(_conn, _ds)
                 print(inputs_report(_inputs_raw, nid, depth=opt["--depth"], fanout=opt["--fanout"],
-                                    budget=opt["--budget"]))
+                                    budget=opt["--budget"], values=_values))
                 from graphify import querylog
                 querylog.log_query(kind="explain", question=sys.argv[2], corpus=str(gp), nodes_returned=0)
                 _touch_query_stamp(gp)

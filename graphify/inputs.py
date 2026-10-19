@@ -40,11 +40,15 @@ def _facts(n: dict, address_taken: bool) -> str:
     return ", ".join(bits)
 
 
-def inputs_report(raw: dict, nid: str, depth: int = 1, fanout: int = 30, budget: int = 2000) -> str:
+def inputs_report(raw: dict, nid: str, depth: int = 1, fanout: int = 30, budget: int = 2000,
+                  values=None) -> str:
     """Text report of the inputs of ``nid`` and their producers, ``depth`` producer hops deep.
 
     Hop 1 is always complete. A deeper hop is printed only if the whole hop fits the token
-    budget (about 3 characters per token); otherwise the report says where it stopped."""
+    budget (about 3 characters per token); otherwise the report says where it stopped.
+
+    ``values`` (optional): callable(a2l parameter name) -> list of lines with the parameter
+    value from a dataset; used for every input that carries an A2L parameter name."""
     edges = raw.get("links", raw.get("edges", []))
     nodes = {n["id"]: n for n in raw.get("nodes", [])}
     if nid not in nodes:
@@ -81,6 +85,13 @@ def inputs_report(raw: dict, nid: str, depth: int = 1, fanout: int = 30, budget:
         head.append(f"Callers ({len(callers)}), argument values come from here: "
                     + ", ".join(callers[:MAX_CALLERS]) + extra)
 
+    def value_lines(i: str) -> list:
+        if values is None:
+            return []
+        m = nodes[i].get("metadata") if isinstance(nodes[i].get("metadata"), dict) else {}
+        key = m.get("a2l_characteristic_name") or m.get("a2l_axis_pts_name")
+        return list(values(key)) if key else []
+
     def block(fn: str) -> list:
         lines = []
         reads = sorted({e["target"] for e in out_e[fn] if e["relation"] in READ and typ.get(e["target"]) == "variable"},
@@ -88,6 +99,7 @@ def inputs_report(raw: dict, nid: str, depth: int = 1, fanout: int = 30, budget:
         for v in reads:
             taken = any((e.get("metadata") or {}).get("address_taken") for e in in_e[v] + out_e[v])
             lines.append(f"  {label(v)}  [{_facts(nodes[v], taken)}]")
+            lines.extend(value_lines(v))
             if fn in stub_for:
                 lines.append(f"      writers collapsed: {stub_for[fn]['label']} - raise --fanout to list them")
                 continue
@@ -104,6 +116,7 @@ def inputs_report(raw: dict, nid: str, depth: int = 1, fanout: int = 30, budget:
         cals = sorted({e["target"] for e in out_e[fn] if e["relation"] == CAL_READ})
         for c in cals:
             lines.append(f"  calibration {label(c)}  [{_facts(nodes[c], False)}]")
+            lines.extend(value_lines(c))
         if not reads and not cals:
             lines.append("  (reads no variable or calibration)")
         return lines
