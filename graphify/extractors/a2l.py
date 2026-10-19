@@ -493,6 +493,11 @@ MAX_IMPLICIT_INDEX_DEPTH = 4  # up to a 4D table
 MAX_STRUCT_MEMBERS = 200   # member names kept on the struct variable node
 
 
+def _path_tokens(path: str) -> list:
+    """`a.b[2][?]`, `a[2].b` and `a.2.b` all -> ['a','b','2','?'] style token lists (separators . [ ] ->)."""
+    return [t for t in re.split(r"[.\[\]]+|->", path) if t]
+
+
 def resolve_a2l_key(join_key: str, table: dict):
     """Exact key first, then APPEND ``[0]``... (whole-table code access vs indexed
     A2L symbol), then STRIP trailing indices (loop-expanded code access vs bare
@@ -708,10 +713,38 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
         stats["struct_members"] += len(names)
         stats["struct_variables"] = stats.get("struct_variables", 0) + 1
 
+    # Calibration fields whose index could not be resolved (`...parameter_ko[2][?]`): link them to
+    # every still-unmatched A2L element characteristic that fits the known tokens.
+    by_len: dict = {}
+    for ckey, (cname, cobj) in sym_to_char.items():
+        if ckey not in matched_chars:
+            toks = _path_tokens(ckey)
+            by_len.setdefault(len(toks), []).append((toks, ckey, cname, cobj))
+    stats["index_members"] = 0
+    for node in [n for n in nodes if n.get("type") == "calibration_field"]:
+        meta = node.setdefault("metadata", {})
+        key = meta.get("calibration_path") or node.get("label") or ""
+        if meta.get("a2l_characteristic_name") or meta.get("a2l_members") or "?" not in key:
+            continue
+        want = _path_tokens(re.sub(r"#\d+$", "", key))
+        hits = [(ck, cn, co) for toks, ck, cn, co in by_len.get(len(want), [])
+                if all(w == "?" or w == t for w, t in zip(want, toks))]
+        if not hits:
+            continue
+        for ckey, cname, cobj in hits:
+            matched_chars.add(ckey)
+            _edge(node["id"], _char_node(cname, cobj, ckey), "mapped_to_a2l_characteristic")
+        meta["a2l_members"] = sorted(h[1] for h in hits)[:MAX_STRUCT_MEMBERS]
+        meta["a2l_member_count"] = len(hits)
+        meta["a2l_member_kind"] = "index"
+        stats["index_members"] += len(hits)
+        stats["index_fields"] = stats.get("index_fields", 0) + 1
+
     for node in nodes:
         m = node.get("metadata") or {}
         if node.get("type") == "calibration_field" and not (
-                m.get("a2l_characteristic_name") or m.get("a2l_axis_pts_name") or m.get("calibration_ref")):
+                m.get("a2l_characteristic_name") or m.get("a2l_axis_pts_name") or m.get("calibration_ref")
+                or m.get("a2l_members")):
             unmatched_code.append(m.get("calibration_path") or node.get("label"))
     stats["unmatched_code"] = unmatched_code[:200]
     stats["unmatched_a2l"] = [name for key, (name, _o) in sym_to_char.items() if key not in matched_chars][:200]

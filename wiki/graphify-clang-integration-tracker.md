@@ -332,3 +332,15 @@ A slice is a view of the finished full graph; nothing is re-parsed.
 | Coverage report | CODE = yes, `code_nodes` shows `[struct: member not tracked]` |
 | `explain --inputs --dataset` | a struct variable prints the values of up to 12 members |
 | Limit | Which member a function reads is not known (member-level tracking would need the member path on the `reads_var` edge) |
+
+## 30. Unresolved array indices (`ptr->parameter_ko[i][j]` vs 4 A2L element characteristics)
+
+| Item | Detail |
+|---|---|
+| Situation | Code reads `parameter_ko[idx_x][idx_y]` with run-time indices; the A2L has one characteristic per element |
+| Extractor | A non-constant index is expanded over the array size for the first index only; the rest stays `?` (e.g. `...parameter_ko[0][?]`, edges AMBIGUOUS) |
+| Join | `join_a2l` matches such a calibration field against still-unmatched A2L symbols: both sides are split into tokens (`.`, `[`, `]`), `?` matches any token, the token count must be equal; spelling `x[1][2]` and `x.1.2` give the same tokens |
+| Node metadata | `a2l_members` (matched names), `a2l_member_count`, `a2l_member_kind = index` |
+| Stats | `index_fields`, `index_members`; matched symbols leave `unmatched_a2l`, the field leaves `unmatched_code` |
+| Coverage report | CODE = yes, note `[index not resolved]` |
+| Not covered | Code index that folds to a number while the A2L element carries a symbolic name (enum/name index like `[DS]`): the tokens differ, so it stays unmatched. Needs an enum map |

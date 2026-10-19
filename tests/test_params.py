@@ -238,3 +238,31 @@ def test_struct_variable_links_to_member_characteristics():
     rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
     assert rows["variable_ko.x"]["code"] is True and "struct" in rows["variable_ko.x"]["code_nodes"]
     assert rows["other.z"]["code"] is False
+
+
+def test_unresolved_index_links_to_all_element_characteristics():
+    from graphify.extractors.a2l import join_a2l
+    a2l = {"measurements": {}, "compu_methods": {}, "compu_vtabs": {}, "axis_pts": {},
+           "characteristics": {n: {"char_type": "VALUE", "internal_symbol": n} for n in (
+               "Cal.parameter_ko[0][0]", "Cal.parameter_ko[0][1]", "Cal.parameter_ko[1][0]",
+               "Cal.parameter_ko[1][1]", "Cal.other[0][0]")}}
+    nodes = [{"id": "f0", "label": "Cal.parameter_ko[0][?]", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "Cal.parameter_ko[0][?]"}},
+             {"id": "f1", "label": "x", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "Cal.parameter_ko[?][?]"}},
+             {"id": "f2", "label": "y", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "Cal.nothing[?]"}}]
+    edges: list = []
+    stats = join_a2l(nodes, edges, a2l, "x.a2l")
+    assert nodes[0]["metadata"]["a2l_members"] == ["Cal.parameter_ko[0][0]", "Cal.parameter_ko[0][1]"]
+    assert nodes[1]["metadata"]["a2l_member_count"] == 4 and nodes[1]["metadata"]["a2l_member_kind"] == "index"
+    assert "a2l_members" not in nodes[2]["metadata"] and stats["unmatched_code"] == ["Cal.nothing[?]"]
+    assert stats["unmatched_a2l"] == ["Cal.other[0][0]"]
+    rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
+    assert rows["Cal.parameter_ko[1][1]"]["code"] and "index not resolved" in rows["Cal.parameter_ko[1][1]"]["code_nodes"]
+    # dotted A2L spelling (parameter_ko.x1.y1) works through the same tokens
+    a2l2 = {**a2l, "characteristics": {"Cal.parameter_ko.x1.y1": {"char_type": "VALUE", "internal_symbol": "Cal.parameter_ko.x1.y1"}}}
+    n2 = [{"id": "g", "label": "g", "type": "calibration_field", "source_file": "k.c",
+           "metadata": {"calibration_path": "Cal.parameter_ko.x1[?]"}}]
+    join_a2l(n2, [], a2l2, "x.a2l")
+    assert n2[0]["metadata"]["a2l_members"] == ["Cal.parameter_ko.x1.y1"]
