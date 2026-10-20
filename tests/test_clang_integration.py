@@ -495,3 +495,17 @@ def test_static_global_and_extern_variables_are_modelled_differently(tmp_path):
     for n in statics:
         assert n["metadata"]["storage"] == "static" and not n["metadata"].get("declaration_only")
         assert holders(n["id"]) == [(n["source_file"], "definition")]
+
+
+def test_constant_index_with_suffix_is_plain_number(tmp_path):
+    """`Tab[0][1u]` must become path `...Tab[0][1]`: the A2L symbol link has no `u` suffix."""
+    (tmp_path / "t.c").write_text(
+        "typedef struct { short Tab[2][2]; } CAL;\n"
+        "static const CAL Rom = {0};\nconst CAL *Ptr;\nshort Out;\n"
+        "void Bios_RegisterCalibrationData(void **p, const void *r, int n);\n"
+        "void Init(void) { Bios_RegisterCalibrationData((void **)&Ptr, &Rom, 4); }\n"
+        "void Run(void) { Out = Ptr->Tab[0u][1UL] + Ptr->Tab[0x1][0]; }\n", encoding="utf-8")
+    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    nodes, _ = _run(tmp_path)
+    paths = sorted(n["metadata"]["calibration_path"] for n in nodes if n.get("type") == "calibration_field")
+    assert paths == ["Rom.Tab[0][1]", "Rom.Tab[1][0]"]

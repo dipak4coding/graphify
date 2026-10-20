@@ -344,3 +344,13 @@ A slice is a view of the finished full graph; nothing is re-parsed.
 | Stats | `index_fields`, `index_members`; matched symbols leave `unmatched_a2l`, the field leaves `unmatched_code` |
 | Coverage report | CODE = yes, note `[index not resolved]` |
 | Not covered | Code index that folds to a number while the A2L element carries a symbolic name (enum/name index like `[DS]`): the tokens differ, so it stays unmatched. Needs an enum map |
+
+## 31. Integer suffix in constant indices (`Tab[0][0u]` vs A2L `Tab[0][0]`)
+
+| Item | Detail |
+|---|---|
+| Symptom | Code node `CalibrationROM.Torque_Default_ko[0][0u]` never matched the A2L symbol `CalibrationROM.Torque_Default_ko[0][0]`; the A2L members only hung on the ROM struct variable (`a2l_members`) |
+| Cause | `_resolve_access_path` copied the raw literal token for a constant index (`0u`, `1UL`, `0x1`); `_eval_int` already stripped suffixes but was not used there |
+| Fix | A constant index is written as the plain decimal number |
+| Effect | Exact join works for these fields (`a2l_characteristic_name` set, one edge per element) |
+| Note | The struct-variable link (section 29) hid this: the coverage report showed CODE = yes with `[struct: member not tracked]`. After the fix those parameters are linked through the code node itself |

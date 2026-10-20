@@ -627,8 +627,11 @@ class ClangExtractor:
             base, base_path, expand = self._resolve_access_path(kids[0])
             idx = kids[1]
             if idx.kind == K.INTEGER_LITERAL:
-                toks = [t.spelling for t in idx.get_tokens()]
-                return base, f"{base_path}[{toks[0] if toks else '?'}]", expand
+                lit = self._eval_int(idx)          # 0u / 1UL / 0x2 -> 0 / 1 / 2 (the A2L symbol has plain numbers)
+                if lit is None:
+                    toks = [t.spelling for t in idx.get_tokens()]
+                    lit = toks[0] if toks else "?"
+                return base, f"{base_path}[{lit}]", expand
             folded = self._eval_int(idx)
             if folded is not None:
                 return base, f"{base_path}[{folded}]", expand
