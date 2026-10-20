@@ -686,33 +686,6 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
             _edge(node["id"], axis_id, "mapped_to_a2l_axis_pts")
             stats["axis_pts"] += 1
 
-    # Struct calibration variables: the code has the struct (`variable_ko`), the A2L has its members
-    # (`variable_ko.x`, `variable_ko[DS].Keine`). Member accesses are not separate code nodes, so
-    # link the struct variable to every A2L characteristic below it.
-    roots: dict = {}
-    for ckey, (cname, cobj) in sym_to_char.items():
-        if ckey not in matched_chars:
-            root = re.split(r"[.\[]", ckey, maxsplit=1)[0]
-            if root != ckey:
-                roots.setdefault(root, []).append((ckey, cname, cobj))
-    stats["struct_members"] = 0
-    for node in [n for n in nodes if n.get("type") == "variable"]:
-        meta = node.setdefault("metadata", {})
-        if meta.get("a2l_characteristic_name") or meta.get("a2l_axis_pts_name"):
-            continue
-        members = roots.get(meta.get("calibration_path") or node.get("label"))
-        if not members:
-            continue
-        names = []
-        for ckey, cname, cobj in members:
-            matched_chars.add(ckey)
-            _edge(node["id"], _char_node(cname, cobj, ckey), "mapped_to_a2l_characteristic")
-            names.append(cname)
-        meta["a2l_members"] = sorted(names)[:MAX_STRUCT_MEMBERS]
-        meta["a2l_member_count"] = len(names)
-        stats["struct_members"] += len(names)
-        stats["struct_variables"] = stats.get("struct_variables", 0) + 1
-
     # Calibration fields whose index could not be resolved (`...parameter_ko[2][?]`): link them to
     # every still-unmatched A2L element characteristic that fits the known tokens.
     by_len: dict = {}
@@ -739,6 +712,17 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
         meta["a2l_member_kind"] = "index"
         stats["index_members"] += len(hits)
         stats["index_fields"] = stats.get("index_fields", 0) + 1
+
+    # Keep EVERY A2L characteristic and axis in the graph, matched or not, so nothing is silently
+    # dropped; `code_matched` says whether a code node points at it.
+    for cname, cobj in characteristics.items():
+        _char_node(cname, cobj, cobj.get("internal_symbol", ""))
+    for aname, aobj in axis_pts.items():
+        _axis_node(aname, aobj)
+    linked = {e["target"] for e in edges if e.get("relation") in ("mapped_to_a2l_characteristic", "mapped_to_a2l_axis_pts")}
+    for n in nodes:
+        if n.get("type") in ("a2l_characteristic", "a2l_axis"):
+            n.setdefault("metadata", {})["code_matched"] = n["id"] in linked
 
     for node in nodes:
         m = node.get("metadata") or {}

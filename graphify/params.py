@@ -555,6 +555,7 @@ def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
     code_by_a2l: dict = {}
     code_only: dict = {}
     code_keys: dict = {}              # normalised code key -> label, for near-miss hints
+    var_names = {n.get("label") for n in nodes if n.get("type") == "variable" and n.get("file_type") != "document"}
     for n in nodes:
         if n.get("type") not in ("variable", "calibration_field") or n.get("file_type") == "document":
             continue
@@ -564,8 +565,7 @@ def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
         for k in linked:
             code_by_a2l.setdefault(k, []).append(where)
         for k in m.get("a2l_members") or []:
-            how = "index not resolved" if m.get("a2l_member_kind") == "index" else "struct: member not tracked"
-            code_by_a2l.setdefault(k, []).append(f"{where} [{how}]")
+            code_by_a2l.setdefault(k, []).append(f"{where} [index not resolved]")
         key = m.get("calibration_path") or n.get("label")
         if key and not linked:
             code_keys.setdefault(_norm_name(key), key)
@@ -583,6 +583,9 @@ def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
             sym = (chars.get(name) or axp.get(name) or {}).get("internal_symbol", "")
             if sym:
                 notes.append(f"A2L symbol: {sym}")
+                root = re.split(r"[.\[]", sym, maxsplit=1)[0]
+                if root != sym and root in var_names:
+                    notes.append(f"code has variable '{root}', but no access to this member was found")
             hit = code_keys.get(_norm_name(sym or name))
             if hit:
                 notes.append(f"code symbol '{hit}' looks the same (case/index differs) - join missed it")

@@ -354,3 +354,15 @@ A slice is a view of the finished full graph; nothing is re-parsed.
 | Fix | A constant index is written as the plain decimal number |
 | Effect | Exact join works for these fields (`a2l_characteristic_name` set, one edge per element) |
 | Note | The struct-variable link (section 29) hid this: the coverage report showed CODE = yes with `[struct: member not tracked]`. After the fix those parameters are linked through the code node itself |
+
+## 32. Struct fallback removed; every A2L node is kept
+
+| Item | Detail |
+|---|---|
+| Removed | Section 29's fallback (linking a struct variable to all A2L characteristics below it, `a2l_members` on the variable). It made unmatched A2L entries look matched |
+| New rule | `join_a2l` always creates a node for EVERY A2L characteristic (`a2l_characteristic`) and axis (`a2l_axis`), matched or not (axis edges included) |
+| Flag | `metadata.code_matched` = true when a code node points at it (`mapped_to_a2l_characteristic` / `mapped_to_a2l_axis_pts`), else false |
+| Kept | Unresolved-index match (section 30): it links real code nodes (`...[0][?]`) to element characteristics |
+| Coverage report | A2L-only rows get the note `code has variable 'X', but no access to this member was found` when the struct variable exists in code |
+| Cost | Graph size grows by the number of unmatched A2L entries |
+| Later | Merge code and A2L nodes into one parameter node (planned, not now) |

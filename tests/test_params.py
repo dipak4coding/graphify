@@ -221,23 +221,37 @@ def test_array_of_bit_structs_parsed_and_linked():
     assert "KusLC_AuswTasteBetaetigt_ko[DS].Keine" not in rep2["not_in_a2l"] and len(rep2["not_in_a2l"]) == 3
 
 
-def test_struct_variable_links_to_member_characteristics():
+def test_all_a2l_nodes_kept_and_struct_variable_is_not_a_match():
     from graphify.extractors.a2l import join_a2l
-    a2l = {"measurements": {}, "compu_methods": {}, "compu_vtabs": {}, "axis_pts": {},
+    a2l = {"measurements": {}, "compu_methods": {}, "compu_vtabs": {},
+           "axis_pts": {"Ax": {"internal_symbol": "Ax"}},
            "characteristics": {
-               "variable_ko.x": {"char_type": "VALUE", "internal_symbol": "variable_ko.x"},
-               "variable_ko.y": {"char_type": "VALUE", "internal_symbol": "variable_ko.y"},
-               "other.z": {"char_type": "VALUE", "internal_symbol": "other.z"}}}
+               "variable_ko.x": {"char_type": "VALUE", "internal_symbol": "variable_ko.x", "axis_references": []},
+               "variable_ko.y": {"char_type": "VALUE", "internal_symbol": "variable_ko.y", "axis_references": []}}}
     nodes = [{"id": "v", "label": "variable_ko", "type": "variable", "source_file": "k.c", "metadata": {}}]
     edges: list = []
     stats = join_a2l(nodes, edges, a2l, "x.a2l")
-    meta = nodes[0]["metadata"]
-    assert meta["a2l_members"] == ["variable_ko.x", "variable_ko.y"] and stats["struct_members"] == 2
-    assert stats["unmatched_a2l"] == ["other.z"]
-    assert sum(e["relation"] == "mapped_to_a2l_characteristic" and e["source"] == "v" for e in edges) == 2
+    assert "a2l_members" not in nodes[0]["metadata"]
+    assert not any(e["source"] == "v" for e in edges)                      # the struct is not linked
+    a2l_nodes = {n["label"]: n for n in nodes if n.get("type") in ("a2l_characteristic", "a2l_axis")}
+    assert set(a2l_nodes) == {"variable_ko.x", "variable_ko.y", "Ax"}      # every A2L entry is in the graph
+    assert all(n["metadata"]["code_matched"] is False for n in a2l_nodes.values())
+    assert sorted(stats["unmatched_a2l"]) == ["variable_ko.x", "variable_ko.y"]
     rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
-    assert rows["variable_ko.x"]["code"] is True and "struct" in rows["variable_ko.x"]["code_nodes"]
-    assert rows["other.z"]["code"] is False
+    assert rows["variable_ko.x"]["code"] is False
+    assert "code has variable 'variable_ko'" in rows["variable_ko.x"]["note"]
+
+
+def test_code_matched_flag_true_for_real_match():
+    from graphify.extractors.a2l import join_a2l
+    a2l = {"measurements": {}, "compu_methods": {}, "compu_vtabs": {}, "axis_pts": {},
+           "characteristics": {"Gain": {"char_type": "VALUE", "internal_symbol": "k_gain", "axis_references": []},
+                               "Other": {"char_type": "VALUE", "internal_symbol": "k_other", "axis_references": []}}}
+    nodes = [{"id": "c", "label": "k_gain", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "k_gain"}}]
+    join_a2l(nodes, [], a2l, "x.a2l")
+    flags = {n["label"]: n["metadata"]["code_matched"] for n in nodes if n.get("type") == "a2l_characteristic"}
+    assert flags == {"Gain": True, "Other": False}
 
 
 def test_unresolved_index_links_to_all_element_characteristics():
