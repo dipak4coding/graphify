@@ -245,10 +245,10 @@ def test_all_a2l_nodes_kept_and_struct_variable_is_not_a_match():
 def test_code_matched_flag_true_for_real_match():
     from graphify.extractors.a2l import join_a2l
     a2l = {"measurements": {}, "compu_methods": {}, "compu_vtabs": {}, "axis_pts": {},
-           "characteristics": {"Gain": {"char_type": "VALUE", "internal_symbol": "k_gain", "axis_references": []},
-                               "Other": {"char_type": "VALUE", "internal_symbol": "k_other", "axis_references": []}}}
-    nodes = [{"id": "c", "label": "k_gain", "type": "calibration_field", "source_file": "k.c",
-              "metadata": {"calibration_path": "k_gain"}}]
+           "characteristics": {"Gain": {"char_type": "VALUE", "internal_symbol": "Cal.k_gain", "axis_references": []},
+                               "Other": {"char_type": "VALUE", "internal_symbol": "Cal.k_other", "axis_references": []}}}
+    nodes = [{"id": "c", "label": "Cal.k_gain", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "Cal.k_gain"}}]
     join_a2l(nodes, [], a2l, "x.a2l")
     flags = {n["label"]: n["metadata"]["code_matched"] for n in nodes if n.get("type") == "a2l_characteristic"}
     assert flags == {"Gain": True, "Other": False}
@@ -305,3 +305,15 @@ def test_mask_characteristics_keep_index_and_mask_on_links():
                    for e in edges if e["source"] == "v")
     assert links == [("variable.k1", "[0]", "1"), ("variable.k2", "[0]", "2")]
     assert nodes[0]["metadata"]["a2l_members"] == ["variable.k1", "variable.k2"]
+
+
+def test_plain_variable_never_links_to_characteristic_and_single_part_symbol_is_flagged():
+    from graphify.extractors.a2l import join_a2l
+    a2l = {"measurements": {}, "compu_methods": {}, "compu_vtabs": {}, "axis_pts": {},
+           "characteristics": {"Odd": {"char_type": "VALUE", "internal_symbol": "odd_var", "axis_references": []}}}
+    nodes = [{"id": "v", "label": "odd_var", "type": "variable", "source_file": "k.c", "metadata": {}}]
+    edges: list = []
+    join_a2l(nodes, edges, a2l, "x.a2l")
+    assert not any(e["source"] == "v" for e in edges) and "a2l_characteristic_name" not in nodes[0]["metadata"]
+    rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
+    assert "single part" in rows["Odd"]["note"]

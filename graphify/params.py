@@ -578,6 +578,10 @@ def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
         where = code_by_a2l.get(name) or code_only.get(name) or []
         in_code = bool(where)
         notes = []
+        if in_a2l:
+            asym = (chars.get(name) or axp.get(name) or {}).get("internal_symbol", "")
+            if asym and "." not in asym.split("#")[0]:
+                notes.append("A2L symbol has a single part (a calibratable normally is struct.member) - check")
         if in_a2l and not in_code:
             sym = (chars.get(name) or axp.get(name) or {}).get("internal_symbol", "")
             if sym:

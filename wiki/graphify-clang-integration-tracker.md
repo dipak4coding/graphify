@@ -383,3 +383,11 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Unchanged | All A2L nodes are kept (`code_matched` flag); measurements still use `resolve_a2l_key`; `.par` matching by A2L name; coverage report columns |
 | Display | `explain` / `query` edge lines show ` index=[..] mask=..` |
 | Re-extract | Node ids of calibration fields changed (no index/`#mask` in the id): delete `graphify-out` and extract the full repo |
+
+## 34. Calibratable symbols have two parts
+
+| Item | Detail |
+|---|---|
+| Rule (from the project) | A calibratable variable's symbol always has at least two parts (`kwsapp_rom.variable`); a non-calibratable one is the variable label alone |
+| Join | A code node links to A2L characteristics / axis points only when its plain name contains a `.`. A plain variable never links to a characteristic (it can still get `calibration_ref` from a measurement) |
+| Coverage report | An A2L characteristic or axis whose symbol has a single part gets the note `A2L symbol has a single part ... - check` |

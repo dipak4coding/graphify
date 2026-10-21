@@ -702,7 +702,9 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
                 stats["fallback"] += 1
             stats["measurements"] += 1
 
-        hits = char_by_plain.get(plain_key)
+        # A calibratable symbol always has a struct part (`rom.variable`); a plain variable is a measurement.
+        calibratable = "." in plain_key
+        hits = char_by_plain.get(plain_key) if calibratable else None
         if hits:
             matched_syms.update(h[0] for h in hits)
             _link(node, hits, "mapped_to_a2l_characteristic", "a2l_characteristic_name", "a2l_members")
@@ -714,7 +716,7 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
             stats["characteristics"] += 1
             stats["links"] = stats.get("links", 0) + len(hits)
 
-        ahits = axis_by_plain.get(plain_key)
+        ahits = axis_by_plain.get(plain_key) if calibratable else None
         if ahits:
             _link(node, ahits, "mapped_to_a2l_axis_pts", "a2l_axis_pts_name", "a2l_axis_members")
             stats["axis_pts"] += 1
