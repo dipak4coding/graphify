@@ -493,9 +493,27 @@ MAX_IMPLICIT_INDEX_DEPTH = 4  # up to a 4D table
 MAX_STRUCT_MEMBERS = 200   # member names kept on the struct variable node
 
 
-def _path_tokens(path: str) -> list:
-    """`a.b[2][?]`, `a[2].b` and `a.2.b` all -> ['a','b','2','?'] style token lists (separators . [ ] ->)."""
-    return [t for t in re.split(r"[.\[\]]+|->", path) if t]
+_INDEX_GROUP_RE = re.compile(r"\[[^\]]*\]")
+
+
+def split_symbol(sym: str):
+    """`Cal.Tab[0][1]#2` -> ('Cal.Tab', '[0][1]', '2'): plain name, index text, bit mask.
+
+    Only the bracketed index groups and the `#mask` leave the name. Struct and member names stay,
+    so `var.x` and `var.y` remain two different parameters."""
+    base, _, mask = str(sym).partition("#")
+    return _INDEX_GROUP_RE.sub("", base), "".join(_INDEX_GROUP_RE.findall(base)), mask
+
+
+def _plain_index(table: dict) -> dict:
+    """plain name -> [(symbol, A2L name, object, index text, mask)] for every entry that has a symbol."""
+    out: dict = {}
+    for name, obj in table.items():
+        sym = obj.get("internal_symbol")
+        if sym:
+            plain, idx, mask = split_symbol(sym)
+            out.setdefault(plain, []).append((sym, name, obj, idx, mask))
+    return out
 
 
 def resolve_a2l_key(join_key: str, table: dict):
@@ -588,18 +606,20 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
     by_id = {n["id"]: n for n in nodes if n.get("id")}
     seen_edges = {(e.get("source"), e.get("target"), e.get("relation")) for e in edges}
     stats = {"measurements": 0, "characteristics": 0, "axis_pts": 0, "fallback": 0}
-    matched_chars: set = set()
     unmatched_code: list = []
 
-    def _edge(src, tgt, relation):
+    def _edge(src, tgt, relation, metadata=None):
         key = (src, tgt, relation)
         if key in seen_edges:
             return
         seen_edges.add(key)
-        edges.append({
+        e = {
             "source": src, "target": tgt, "relation": relation, "confidence": "EXTRACTED",
             "source_file": a2l_source_file, "weight": 1.0, "context": "a2l",
-        })
+        }
+        if metadata:
+            e["metadata"] = metadata
+        edges.append(e)
 
     def _axis_node(axis_name: str, axp: Optional[dict]) -> str:
         axis_id = make_id("a2laxis", axis_name)
@@ -641,11 +661,36 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
                 _edge(char_id, axis_id, _axis_relation_name(cobj.get("char_type", ""), i))
         return char_id
 
+    def _link(node: dict, hits: list, relation: str, name_key: str, members_key: str) -> None:
+        """Link one code node to every A2L entry that has its plain name (indices and mask ignored).
+        The link carries the index text and the mask; the names stay as text on the code node."""
+        meta = node.setdefault("metadata", {})
+        for sym, cname, cobj, idx, mask in hits:
+            target = _char_node(cname, cobj, sym) if relation == "mapped_to_a2l_characteristic" \
+                else _axis_node(cname, cobj)
+            em = {"characteristic" if relation == "mapped_to_a2l_characteristic" else "axis": cname}
+            if idx:
+                em["index"] = idx
+            if mask:
+                em["mask"] = mask
+            _edge(node["id"], target, relation, em)
+        names = sorted(h[1] for h in hits)
+        meta[members_key] = names[:MAX_STRUCT_MEMBERS]
+        meta[members_key.replace("members", "member_count")] = len(names)
+        if len(hits) == 1:
+            meta[name_key] = hits[0][1]
+        for h in hits[:3]:
+            _add_rationale(node, h[2].get("description", ""))
+
+    char_by_plain = _plain_index(characteristics)
+    axis_by_plain = _plain_index(axis_pts)
+    matched_syms: set = set()
     for node in [n for n in nodes if n.get("type") in ("variable", "calibration_field")]:
         meta = node.setdefault("metadata", {})
         join_key = meta.get("calibration_path") or node.get("label")
         if not join_key:
             continue
+        plain_key = split_symbol(join_key)[0]
 
         mkey, mfb = resolve_a2l_key(join_key, measurements)
         if mkey is not None:
@@ -657,61 +702,23 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
                 stats["fallback"] += 1
             stats["measurements"] += 1
 
-        ckey, cfb = resolve_a2l_key(join_key, sym_to_char)
-        if ckey is not None:
-            cname, cobj = sym_to_char[ckey]
-            matched_chars.add(ckey)
-            meta["a2l_characteristic_name"] = cname
-            if cfb:
-                meta["a2l_implicit_index_fallback"] = True
-                stats["fallback"] += 1
-            char_id = _char_node(cname, cobj, ckey)
-            # description also on the code node, so "oil temperature threshold" finds it
-            _add_rationale(node, cobj.get("description", ""))
-            rng = _fmt_range(cobj.get("min_value"), cobj.get("max_value"))
+        hits = char_by_plain.get(plain_key)
+        if hits:
+            matched_syms.update(h[0] for h in hits)
+            _link(node, hits, "mapped_to_a2l_characteristic", "a2l_characteristic_name", "a2l_members")
+            los = [h[2].get("min_value") for h in hits if h[2].get("min_value") is not None]
+            his = [h[2].get("max_value") for h in hits if h[2].get("max_value") is not None]
+            rng = _fmt_range(min(los), max(his)) if los and his else ""
             if rng:
                 meta["a2l_range"] = rng
-            _edge(node["id"], char_id, "mapped_to_a2l_characteristic")
             stats["characteristics"] += 1
+            stats["links"] = stats.get("links", 0) + len(hits)
 
-        akey, afb = resolve_a2l_key(join_key, sym_to_axis)
-        if akey is not None:
-            aname, aobj = sym_to_axis[akey]
-            meta["a2l_axis_pts_name"] = aname
-            if afb:
-                meta["a2l_implicit_index_fallback"] = True
-                stats["fallback"] += 1
-            axis_id = _axis_node(aname, aobj)
-            _add_rationale(node, aobj.get("description", ""))
-            _edge(node["id"], axis_id, "mapped_to_a2l_axis_pts")
+        ahits = axis_by_plain.get(plain_key)
+        if ahits:
+            _link(node, ahits, "mapped_to_a2l_axis_pts", "a2l_axis_pts_name", "a2l_axis_members")
             stats["axis_pts"] += 1
 
-    # Calibration fields whose index could not be resolved (`...parameter_ko[2][?]`): link them to
-    # every still-unmatched A2L element characteristic that fits the known tokens.
-    by_len: dict = {}
-    for ckey, (cname, cobj) in sym_to_char.items():
-        if ckey not in matched_chars:
-            toks = _path_tokens(ckey)
-            by_len.setdefault(len(toks), []).append((toks, ckey, cname, cobj))
-    stats["index_members"] = 0
-    for node in [n for n in nodes if n.get("type") == "calibration_field"]:
-        meta = node.setdefault("metadata", {})
-        key = meta.get("calibration_path") or node.get("label") or ""
-        if meta.get("a2l_characteristic_name") or meta.get("a2l_members") or "?" not in key:
-            continue
-        want = _path_tokens(re.sub(r"#\d+$", "", key))
-        hits = [(ck, cn, co) for toks, ck, cn, co in by_len.get(len(want), [])
-                if all(w == "?" or w == t for w, t in zip(want, toks))]
-        if not hits:
-            continue
-        for ckey, cname, cobj in hits:
-            matched_chars.add(ckey)
-            _edge(node["id"], _char_node(cname, cobj, ckey), "mapped_to_a2l_characteristic")
-        meta["a2l_members"] = sorted(h[1] for h in hits)[:MAX_STRUCT_MEMBERS]
-        meta["a2l_member_count"] = len(hits)
-        meta["a2l_member_kind"] = "index"
-        stats["index_members"] += len(hits)
-        stats["index_fields"] = stats.get("index_fields", 0) + 1
 
     # Keep EVERY A2L characteristic and axis in the graph, matched or not, so nothing is silently
     # dropped; `code_matched` says whether a code node points at it.
@@ -728,10 +735,10 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
         m = node.get("metadata") or {}
         if node.get("type") == "calibration_field" and not (
                 m.get("a2l_characteristic_name") or m.get("a2l_axis_pts_name") or m.get("calibration_ref")
-                or m.get("a2l_members")):
+                or m.get("a2l_members") or m.get("a2l_axis_members")):
             unmatched_code.append(m.get("calibration_path") or node.get("label"))
     stats["unmatched_code"] = unmatched_code[:200]
-    stats["unmatched_a2l"] = [name for key, (name, _o) in sym_to_char.items() if key not in matched_chars][:200]
+    stats["unmatched_a2l"] = [name for key, (name, _o) in sym_to_char.items() if key not in matched_syms][:200]
     stats["totals"] = {
         "measurements": len(measurements), "characteristics": len(characteristics), "axis_pts": len(axis_pts),
     }

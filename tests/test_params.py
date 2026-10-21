@@ -254,29 +254,36 @@ def test_code_matched_flag_true_for_real_match():
     assert flags == {"Gain": True, "Other": False}
 
 
-def test_unresolved_index_links_to_all_element_characteristics():
+def test_one_code_node_links_to_all_elements_by_plain_name():
     from graphify.extractors.a2l import join_a2l
-    a2l = {"measurements": {}, "compu_methods": {}, "compu_vtabs": {}, "axis_pts": {},
-           "characteristics": {n: {"char_type": "VALUE", "internal_symbol": n} for n in (
-               "Cal.parameter_ko[0][0]", "Cal.parameter_ko[0][1]", "Cal.parameter_ko[1][0]",
-               "Cal.parameter_ko[1][1]", "Cal.other[0][0]")}}
-    nodes = [{"id": "f0", "label": "Cal.parameter_ko[0][?]", "type": "calibration_field", "source_file": "k.c",
-              "metadata": {"calibration_path": "Cal.parameter_ko[0][?]"}},
-             {"id": "f1", "label": "x", "type": "calibration_field", "source_file": "k.c",
-              "metadata": {"calibration_path": "Cal.parameter_ko[?][?]"}},
-             {"id": "f2", "label": "y", "type": "calibration_field", "source_file": "k.c",
-              "metadata": {"calibration_path": "Cal.nothing[?]"}}]
+    chars = {}
+    for i, (n1, n2) in enumerate((("K1", "P1"), ("K1", "P2"), ("K2", "P1"), ("K2", "P2"))):
+        chars[f"Tab_ko[{n1}][{n2}]"] = {"char_type": "VALUE", "internal_symbol": f"Cal.Tab_ko[{i // 2}][{i % 2}]",
+                                       "axis_references": [], "min_value": 0.0, "max_value": 10.0 * (i + 1)}
+    chars["Cal.var_ko.x"] = {"char_type": "VALUE", "internal_symbol": "Cal.var_ko.x", "axis_references": []}
+    chars["Cal.var_ko.y"] = {"char_type": "VALUE", "internal_symbol": "Cal.var_ko.y", "axis_references": []}
+    chars["Flag_a"] = {"char_type": "VALUE", "internal_symbol": "Cal.Flags#1", "axis_references": []}
+    chars["Flag_b"] = {"char_type": "VALUE", "internal_symbol": "Cal.Flags#2", "axis_references": []}
+    a2l = {"measurements": {}, "compu_methods": {}, "compu_vtabs": {}, "axis_pts": {}, "characteristics": chars}
+    nodes = [{"id": "t", "label": "Cal.Tab_ko", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "Cal.Tab_ko"}},
+             {"id": "x", "label": "Cal.var_ko.x", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "Cal.var_ko.x"}},
+             {"id": "f", "label": "Cal.Flags", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "Cal.Flags"}},
+             {"id": "n", "label": "Cal.nothing", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "Cal.nothing"}}]
     edges: list = []
     stats = join_a2l(nodes, edges, a2l, "x.a2l")
-    assert nodes[0]["metadata"]["a2l_members"] == ["Cal.parameter_ko[0][0]", "Cal.parameter_ko[0][1]"]
-    assert nodes[1]["metadata"]["a2l_member_count"] == 4 and nodes[1]["metadata"]["a2l_member_kind"] == "index"
-    assert "a2l_members" not in nodes[2]["metadata"] and stats["unmatched_code"] == ["Cal.nothing[?]"]
-    assert stats["unmatched_a2l"] == ["Cal.other[0][0]"]
+    t = nodes[0]["metadata"]
+    assert t["a2l_member_count"] == 4 and "a2l_characteristic_name" not in t
+    assert t["a2l_members"] == sorted(n for n in chars if n.startswith("Tab_ko"))      # characteristic names kept as text
+    assert t["a2l_range"] == "0.0..40.0"
+    links = {e["target"]: e["metadata"] for e in edges if e["source"] == "t"}
+    assert links["a2lchar_tab_ko_k2_p1"] == {"characteristic": "Tab_ko[K2][P1]", "index": "[1][0]"}
+    assert nodes[1]["metadata"]["a2l_characteristic_name"] == "Cal.var_ko.x"             # struct members stay separate
+    assert not any(e["source"] == "x" and e["target"].endswith("var_ko_y") for e in edges)
+    assert {e["metadata"].get("mask") for e in edges if e["source"] == "f"} == {"1", "2"}
+    assert stats["unmatched_code"] == ["Cal.nothing"] and stats["unmatched_a2l"] == ["Cal.var_ko.y"]
     rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
-    assert rows["Cal.parameter_ko[1][1]"]["code"] and "index not resolved" in rows["Cal.parameter_ko[1][1]"]["code_nodes"]
-    # dotted A2L spelling (parameter_ko.x1.y1) works through the same tokens
-    a2l2 = {**a2l, "characteristics": {"Cal.parameter_ko.x1.y1": {"char_type": "VALUE", "internal_symbol": "Cal.parameter_ko.x1.y1"}}}
-    n2 = [{"id": "g", "label": "g", "type": "calibration_field", "source_file": "k.c",
-           "metadata": {"calibration_path": "Cal.parameter_ko.x1[?]"}}]
-    join_a2l(n2, [], a2l2, "x.a2l")
-    assert n2[0]["metadata"]["a2l_members"] == ["Cal.parameter_ko.x1.y1"]
+    assert rows["Tab_ko[K1][P2]"]["code"] is True and rows["Cal.var_ko.y"]["code"] is False

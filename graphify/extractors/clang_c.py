@@ -343,6 +343,8 @@ _C_UNOP_ADDROF = 5
 _INT_BINOPS = {"+": lambda a, b: a + b, "-": lambda a, b: a - b, "*": lambda a, b: a * b,
                "<<": lambda a, b: a << b}
 _MAX_LINES_PER_EDGE = 8
+_LIST_META = ("index", "mask")   # edge metadata kept as a list of distinct values (calibration index text, bit mask)
+_MAX_INDEX_VALUES = 20
 
 
 class ClangExtractor:
@@ -456,6 +458,9 @@ class ClangExtractor:
                 "source_file": self.sf(source_file) if source_file else "",
                 "weight": 1.0, "metadata": dict(metadata or {}),
             }
+            for k in _LIST_META:
+                if k in edge["metadata"]:
+                    edge["metadata"][k] = [edge["metadata"][k]]
             ctx = context_for(relation)
             if ctx:
                 edge["context"] = ctx
@@ -464,6 +469,11 @@ class ClangExtractor:
                 edge["metadata"]["lines"] = [line]
             self.edges[key] = edge
         else:
+            for k in _LIST_META:
+                if metadata and k in metadata:
+                    vals = edge["metadata"].setdefault(k, [])
+                    if metadata[k] not in vals and len(vals) < _MAX_INDEX_VALUES:
+                        vals.append(metadata[k])
             if line:
                 lines = edge["metadata"].setdefault("lines", [])
                 if line not in lines and len(lines) < _MAX_LINES_PER_EDGE:
@@ -626,22 +636,11 @@ class ClangExtractor:
                 return None, "", None
             base, base_path, expand = self._resolve_access_path(kids[0])
             idx = kids[1]
-            if idx.kind == K.INTEGER_LITERAL:
-                lit = self._eval_int(idx)          # 0u / 1UL / 0x2 -> 0 / 1 / 2 (the A2L symbol has plain numbers)
-                if lit is None:
-                    toks = [t.spelling for t in idx.get_tokens()]
-                    lit = toks[0] if toks else "?"
-                return base, f"{base_path}[{lit}]", expand
-            folded = self._eval_int(idx)
+            folded = self._eval_int(idx)           # literal (0u, 0x1), enum constant, constant expression
             if folded is not None:
                 return base, f"{base_path}[{folded}]", expand
-            if expand is not None:
-                return base, f"{base_path}[?]", expand
-            size = self._find_array_size(kids[0])
-            if size > 0:
-                toks = [t.spelling for t in idx.get_tokens()]
-                return base, f"{base_path}[{_IDX_PLACEHOLDER}]", (_IDX_PLACEHOLDER, size, " ".join(toks) or "?")
-            return base, f"{base_path}[?]", None
+            toks = [t.spelling for t in idx.get_tokens()]
+            return base, f"{base_path}[?{' '.join(toks) or '?'}]", expand      # run-time index: keep the expression text
         if cursor.kind in self._pass_pt:
             kids = list(cursor.get_children())
             if kids:
@@ -696,11 +695,19 @@ class ClangExtractor:
 
     # ---- handlers ----------------------------------------------------------------
 
+    @staticmethod
+    def _plain_and_index(path: str):
+        """`.Tab[0][?i]` -> ('.Tab', '[0][i]', True). Indices and the run-time marker leave the node path;
+        the index text goes on the edge (True = at least one index is a run-time expression)."""
+        groups = re.findall(r"\[[^\]]*\]", path)
+        plain = re.sub(r"\[[^\]]*\]", "", path)
+        return plain, "".join(g.replace("[?", "[", 1) for g in groups), any(g.startswith("[?") for g in groups)
+
     def _handle_calibration_access(self, cursor, fn_id, sfile):
         if fn_id is None:
             return False
         base, path, expand = self._resolve_access_path(cursor)
-        if base is None or not path or "." not in path:
+        if base is None or not path or "." not in re.sub(r"\[[^\]]*\]", "", path):
             return False
         ref = base.referenced
         if ref is None or ref.kind != self.K.VAR_DECL:
@@ -715,23 +722,15 @@ class ClangExtractor:
         self.add_edge(fn_id, base_id, "reads_var", sfile, line)
         logical_base = self.ptr_to_rom[base_name]
 
-        def emit(concrete_path, confidence, extra=None):
-            cal_path = f"{logical_base}{concrete_path}"
-            cal_id = make_id("calfield", cal_path)
-            meta = {"calibration_path": cal_path, "accessed_via": base_name, "source_extractor": "clang"}
-            if extra:
-                meta.update(extra)
-            self.add_node(cal_id, "calibration_field", sfile, name=cal_path, line=line, metadata=meta)
-            self.add_edge(fn_id, cal_id, "reads_calibration_field", sfile, line, confidence)
-            self.add_edge(base_id, cal_id, "exposes_calibration_field", sfile, line, confidence)
-
-        if expand is not None:
-            placeholder, size, index_expr = expand
-            for i in range(size):
-                emit(path.replace(placeholder, str(i)), "AMBIGUOUS",
-                     {"ambiguous_index": True, "index_expression": index_expr, "possible_indices": size})
-        else:
-            emit(path, "AMBIGUOUS" if "?" in path else "EXTRACTED")
+        plain, idx_text, variable = self._plain_and_index(path)
+        cal_path = f"{logical_base}{plain}"
+        cal_id = make_id("calfield", cal_path)
+        meta = {"calibration_path": cal_path, "accessed_via": base_name, "source_extractor": "clang"}
+        self.add_node(cal_id, "calibration_field", sfile, name=cal_path, line=line, metadata=meta)
+        emeta = {"index": idx_text} if idx_text else None
+        conf = "AMBIGUOUS" if variable else "EXTRACTED"     # a run-time index: which element is not known
+        self.add_edge(fn_id, cal_id, "reads_calibration_field", sfile, line, conf, emeta)
+        self.add_edge(base_id, cal_id, "exposes_calibration_field", sfile, line, conf)
         return True
 
     def _handle_bitmask_access(self, cursor, fn_id, sfile):
@@ -742,7 +741,7 @@ class ClangExtractor:
             return False
         for member_side, mask_side in (kids, list(reversed(kids))):
             base, path, expand = self._resolve_access_path(member_side)
-            if base is None or "." not in path or expand is not None:
+            if base is None or "." not in re.sub(r"\[[^\]]*\]", "", path):
                 continue
             mask = self._eval_int(mask_side)
             if mask is None:
@@ -756,20 +755,24 @@ class ClangExtractor:
             line = cursor.location.line
             base_id = self._global_var(ref, sfile)
             self.add_edge(fn_id, base_id, "reads_var", sfile, line)
-            cal_path = f"{self.ptr_to_rom[canonical.spelling]}{path}#{mask}"
+            plain, idx_text, variable = self._plain_and_index(path)
+            cal_path = f"{self.ptr_to_rom[canonical.spelling]}{plain}"
             cal_id = make_id("calfield", cal_path)
             self.add_node(cal_id, "calibration_field", sfile, name=cal_path, line=line, metadata={
-                "calibration_path": cal_path, "accessed_via": canonical.spelling,
-                "bit_mask": mask, "source_extractor": "clang"})
-            self.add_edge(fn_id, cal_id, "reads_calibration_field", sfile, line)
-            self.add_edge(base_id, cal_id, "exposes_calibration_field", sfile, line)
+                "calibration_path": cal_path, "accessed_via": canonical.spelling, "source_extractor": "clang"})
+            emeta = {"mask": mask}
+            if idx_text:
+                emeta["index"] = idx_text
+            conf = "AMBIGUOUS" if variable else "EXTRACTED"
+            self.add_edge(fn_id, cal_id, "reads_calibration_field", sfile, line, conf, emeta)
+            self.add_edge(base_id, cal_id, "exposes_calibration_field", sfile, line, conf)
             return True
         return False
 
     def _resolve_cal_field(self, arg):
         expr = self._unwrap(arg)
         base, path, expand = self._resolve_access_path(expr)
-        if base is None or "." not in path or expand is not None:
+        if base is None or "." not in re.sub(r"\[[^\]]*\]", "", path):
             return None
         ref = base.referenced
         if ref is None or ref.kind != self.K.VAR_DECL:
@@ -777,7 +780,7 @@ class ClangExtractor:
         canonical = ref.canonical if ref.canonical is not None else ref
         if canonical.spelling not in self.ptr_to_rom:
             return None
-        cal_path = f"{self.ptr_to_rom[canonical.spelling]}{path}"
+        cal_path = f"{self.ptr_to_rom[canonical.spelling]}{self._plain_and_index(path)[0]}"
         return make_id("calfield", cal_path), cal_path
 
     def _resolve_var_or_cal(self, arg, sfile):

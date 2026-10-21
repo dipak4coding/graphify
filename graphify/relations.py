@@ -120,6 +120,10 @@ def edge_flags(edge: dict) -> str:
         out += f" role={meta['role']}"
     if meta.get("address_taken"):
         out += " address_taken"
+    for key in ("index", "mask"):               # calibration element index / bit mask on read and A2L links
+        val = meta.get(key)
+        if val:
+            out += f" {key}=" + (", ".join(str(v) for v in val) if isinstance(val, list) else str(val))
     return out
 
 

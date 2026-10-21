@@ -62,10 +62,14 @@ def test_calibration_edges_and_ambiguous_expansion(toy):
     nodes, edges = _run(toy)
     assert _edge(nodes, edges, "Kku_BerKuehlAnf()", "reads_calibration_field", "KkuAppROM.SW_T_Oel")
     assert _edge(nodes, edges, "KkuAppPtr", "exposes_calibration_field", "KkuAppROM.SW_T_Oel")
-    amb = _edge(nodes, edges, "Kku_Task10ms()", "reads_calibration_field", "KkuAppROM.Kku_Tab_kl[0]")
-    assert amb is not None and amb["confidence"] == "AMBIGUOUS"
-    flag = _by_label(nodes, "KkuAppROM.Kku_Flags#2")
-    assert flag["metadata"]["bit_mask"] == 2
+    amb = _edge(nodes, edges, "Kku_Task10ms()", "reads_calibration_field", "KkuAppROM.Kku_Tab_kl")
+    assert amb is not None and amb["confidence"] == "AMBIGUOUS"          # run-time index [i]: one node, no copies
+    assert amb["metadata"]["index"] == ["[i]"]
+    assert not any(n["label"].startswith("KkuAppROM.Kku_Tab_kl[") for n in nodes)
+    flag = _by_label(nodes, "KkuAppROM.Kku_Flags")
+    assert "bit_mask" not in flag["metadata"]
+    fe = _edge(nodes, edges, "Kku_BerKuehlAnf()", "reads_calibration_field", "KkuAppROM.Kku_Flags")
+    assert fe["metadata"]["mask"] == [2]                                  # the mask lives on the read edge
 
 
 def test_axis_edges(toy):
@@ -498,7 +502,7 @@ def test_static_global_and_extern_variables_are_modelled_differently(tmp_path):
 
 
 def test_constant_index_with_suffix_is_plain_number(tmp_path):
-    """`Tab[0][1u]` must become path `...Tab[0][1]`: the A2L symbol link has no `u` suffix."""
+    """`Tab[0u][1UL]` is index text `[0][1]` on the edge (no `u`); the node path has no index at all."""
     (tmp_path / "t.c").write_text(
         "typedef struct { short Tab[2][2]; } CAL;\n"
         "static const CAL Rom = {0};\nconst CAL *Ptr;\nshort Out;\n"
@@ -508,4 +512,6 @@ def test_constant_index_with_suffix_is_plain_number(tmp_path):
     (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
     nodes, _ = _run(tmp_path)
     paths = sorted(n["metadata"]["calibration_path"] for n in nodes if n.get("type") == "calibration_field")
-    assert paths == ["Rom.Tab[0][1]", "Rom.Tab[1][0]"]
+    assert paths == ["Rom.Tab"]                                           # one node, indices off the path
+    e = next(e for e in _run(tmp_path)[1] if e["relation"] == "reads_calibration_field")
+    assert sorted(e["metadata"]["index"]) == ["[0][1]", "[1][0]"]          # `u`, `UL`, `0x1` are plain numbers

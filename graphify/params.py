@@ -561,11 +561,10 @@ def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
             continue
         m = n.get("metadata") if isinstance(n.get("metadata"), dict) else {}
         where = f"{n.get('label', '')} @ {n.get('source_file', '')}:{n.get('source_location', '')}".rstrip(":")
-        linked = [k for k in (m.get("a2l_characteristic_name"), m.get("a2l_axis_pts_name")) if k]
+        linked = ({k for k in (m.get("a2l_characteristic_name"), m.get("a2l_axis_pts_name")) if k}
+                  | set(m.get("a2l_members") or []) | set(m.get("a2l_axis_members") or []))
         for k in linked:
             code_by_a2l.setdefault(k, []).append(where)
-        for k in m.get("a2l_members") or []:
-            code_by_a2l.setdefault(k, []).append(f"{where} [index not resolved]")
         key = m.get("calibration_path") or n.get("label")
         if key and not linked:
             code_keys.setdefault(_norm_name(key), key)

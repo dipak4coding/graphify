@@ -366,3 +366,20 @@ A slice is a view of the finished full graph; nothing is re-parsed.
 | Coverage report | A2L-only rows get the note `code has variable 'X', but no access to this member was found` when the struct variable exists in code |
 | Cost | Graph size grows by the number of unmatched A2L entries |
 | Later | Merge code and A2L nodes into one parameter node (planned, not now) |
+
+## 33. New mapping: one code node per variable, indices and mask off the name
+
+Supersedes the per-element handling of sections 30 and 31 (expansion over the array size, `[?]` paths, wildcard match, suffix fix). Struct fallback (section 29) stays removed.
+
+| Item | Detail |
+|---|---|
+| Code node | One `calibration_field` per variable path with all `[..]` removed: `Cal.Tab_ko`. Struct/member names stay (`Cal.var_ko.x` and `.y` are two nodes). No copies per element, no `[?]` |
+| Index of a read | On the read edge (`reads_calibration_field`): `metadata.index` = list of distinct texts, e.g. `["[0][1]", "[i]"]` (constants folded: `0u`, `0x1` -> `0`; run-time expressions keep their text). Run-time index -> edge confidence AMBIGUOUS |
+| Bit mask | Not a separate node any more (`Flags#2`): `metadata.mask` list on the read edge |
+| A2L key | `SYMBOL_LINK` (or link-map symbol), CANape `._0_` -> `[0]`, then split into plain name, index text, `#mask` (`split_symbol`). Whole-table types (CURVE, MAP, CUBOID) already arrive without the trailing index |
+| Join | Plain code name == plain A2L name. One code node -> every A2L entry with that plain name (`mapped_to_a2l_characteristic` / `mapped_to_a2l_axis_pts`) |
+| On the link | `metadata`: `characteristic` (A2L name as text), `index` (e.g. `[1][0]`), `mask` |
+| On the code node | `a2l_members` (A2L names as text, max 200), `a2l_member_count`; if exactly one entry matched also `a2l_characteristic_name`; `a2l_range` over all entries; `a2l_axis_members` for axes |
+| Unchanged | All A2L nodes are kept (`code_matched` flag); measurements still use `resolve_a2l_key`; `.par` matching by A2L name; coverage report columns |
+| Display | `explain` / `query` edge lines show ` index=[..] mask=..` |
+| Re-extract | Node ids of calibration fields changed (no index/`#mask` in the id): delete `graphify-out` and extract the full repo |
