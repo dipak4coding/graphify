@@ -672,7 +672,7 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
             if idx:
                 em["index"] = idx
             if mask:
-                em["mask"] = mask
+                em["mask"] = int(mask) if str(mask).isdigit() else mask      # same type as the code's read edge
             _edge(node["id"], target, relation, em)
         names = sorted(h[1] for h in hits)
         meta[members_key] = names[:MAX_STRUCT_MEMBERS]

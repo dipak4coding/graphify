@@ -283,7 +283,7 @@ def test_one_code_node_links_to_all_elements_by_plain_name():
     assert links["a2lchar_tab_ko_k2_p1"] == {"characteristic": "Tab_ko[K2][P1]", "index": "[1][0]"}
     assert nodes[1]["metadata"]["a2l_characteristic_name"] == "Cal.var_ko.x"             # struct members stay separate
     assert not any(e["source"] == "x" and e["target"].endswith("var_ko_y") for e in edges)
-    assert {e["metadata"].get("mask") for e in edges if e["source"] == "f"} == {"1", "2"}
+    assert {e["metadata"].get("mask") for e in edges if e["source"] == "f"} == {1, 2}
     assert stats["unmatched_code"] == ["Cal.nothing"] and stats["unmatched_a2l"] == ["Cal.var_ko.y"]
     rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
     assert rows["Tab_ko[K1][P2]"]["code"] is True and rows["Cal.var_ko.y"]["code"] is False
@@ -303,7 +303,7 @@ def test_mask_characteristics_keep_index_and_mask_on_links():
     join_a2l(nodes, edges, a2l, "x.a2l")
     links = sorted((e["metadata"]["characteristic"], e["metadata"]["index"], e["metadata"]["mask"])
                    for e in edges if e["source"] == "v")
-    assert links == [("variable.k1", "[0]", "1"), ("variable.k2", "[0]", "2")]
+    assert links == [("variable.k1", "[0]", 1), ("variable.k2", "[0]", 2)]
     assert nodes[0]["metadata"]["a2l_members"] == ["variable.k1", "variable.k2"]
 
 
@@ -317,3 +317,20 @@ def test_plain_variable_never_links_to_characteristic_and_single_part_symbol_is_
     assert not any(e["source"] == "v" for e in edges) and "a2l_characteristic_name" not in nodes[0]["metadata"]
     rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
     assert "single part" in rows["Odd"]["note"]
+
+
+def test_two_characteristics_with_same_symbol_link_and_different_bit_masks(tmp_path):
+    from graphify.extractors.a2l import join_a2l, scan_a2l
+    block = ('/begin CHARACTERISTIC SystemReaction.Error_%s\n"Dummy reaction"\n'
+             'VALUE 0x10001000 __UWORD_S 0 OffOn 0 1\nBIT_MASK %s\nFORMAT "%%.0"\n'
+             'SYMBOL_LINK "DummyROM.ReactionMask" 0\n/end CHARACTERISTIC\n')
+    f = tmp_path / "m.a2l"
+    f.write_text('/begin PROJECT P ""\n/begin MODULE M ""\n' + block % ("A", "0x1000") + block % ("B", "0x0800")
+                 + '/end MODULE\n/end PROJECT\n', encoding="utf-8")
+    parsed = scan_a2l(str(f))
+    nodes = [{"id": "v", "label": "DummyROM.ReactionMask", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "DummyROM.ReactionMask"}}]
+    edges: list = []
+    join_a2l(nodes, edges, parsed, "m.a2l")
+    got = sorted((e["metadata"]["characteristic"], e["metadata"]["mask"]) for e in edges if e["source"] == "v")
+    assert got == [("SystemReaction.Error_A", 4096), ("SystemReaction.Error_B", 2048)]
