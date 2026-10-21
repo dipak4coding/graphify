@@ -515,3 +515,34 @@ def test_constant_index_with_suffix_is_plain_number(tmp_path):
     assert paths == ["Rom.Tab"]                                           # one node, indices off the path
     e = next(e for e in _run(tmp_path)[1] if e["relation"] == "reads_calibration_field")
     assert sorted(e["metadata"]["index"]) == ["[0][1]", "[1][0]"]          # `u`, `UL`, `0x1` are plain numbers
+
+
+def test_whole_struct_read_expands_to_member_nodes_from_the_header_type(tmp_path):
+    """`g(ptr->Feh)` reads a struct: its leaf members (nested struct, bit-fields, array of structs, anonymous
+    union) become calibration nodes with exact paths; a direct `ptr->Feh.flag.Bit` is not expanded."""
+    (tmp_path / "t.h").write_text(
+        "typedef struct { unsigned AdcPSpeicher:1; unsigned Other:1; } FLAGS_T;\n"
+        "typedef struct { FLAGS_T flag; short arr[3]; struct { int u; int v; } inner[2];\n"
+        "                 union { int a; char b; }; } FEH_T;\n"
+        "typedef struct { FEH_T Feh; short Direct; } ROM_T;\n", encoding="utf-8")
+    (tmp_path / "t.c").write_text(
+        '#include "t.h"\n'
+        "static const ROM_T Rom = {0};\nconst ROM_T *Ptr;\nshort Out;\n"
+        "void Bios_RegisterCalibrationData(void **p, const void *r, int n);\n"
+        "void Init(void) { Bios_RegisterCalibrationData((void **)&Ptr, &Rom, 4); }\n"
+        "void Use(FEH_T f) { Out = f.arr[0]; }\n"
+        "void Whole(void) { Use(Ptr->Feh); }\n"
+        "void One(void) { Out = Ptr->Direct + Ptr->Feh.flag.AdcPSpeicher; }\n", encoding="utf-8")
+    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    nodes, edges = _run(tmp_path)
+    paths = {n["metadata"]["calibration_path"] for n in nodes if n.get("type") == "calibration_field"}
+    assert {"Rom.Feh", "Rom.Feh.flag.AdcPSpeicher", "Rom.Feh.flag.Other", "Rom.Feh.arr", "Rom.Feh.inner.u",
+            "Rom.Feh.inner.v", "Rom.Feh.a", "Rom.Feh.b", "Rom.Direct"} <= paths
+    ids = {n["label"]: n["id"] for n in nodes}
+    whole = {e["target"]: e for e in edges if e["relation"] == "reads_calibration_field" and e["source"] == ids["Whole()"]}
+    assert whole[ids["Rom.Feh"]]["confidence"] == "EXTRACTED"
+    assert whole[ids["Rom.Feh.flag.Other"]]["confidence"] == "INFERRED"
+    assert whole[ids["Rom.Feh.flag.Other"]]["metadata"]["via"] == "struct_type"
+    one = {e["target"]: e for e in edges if e["relation"] == "reads_calibration_field" and e["source"] == ids["One()"]}
+    assert ids["Rom.Feh.flag.AdcPSpeicher"] in one and ids["Rom.Feh.flag.Other"] not in one       # direct read: no expansion
+    assert one[ids["Rom.Feh.flag.AdcPSpeicher"]]["confidence"] == "EXTRACTED"

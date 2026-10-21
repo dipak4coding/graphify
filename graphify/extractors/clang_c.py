@@ -344,6 +344,8 @@ _INT_BINOPS = {"+": lambda a, b: a + b, "-": lambda a, b: a - b, "*": lambda a, 
                "<<": lambda a, b: a << b}
 _MAX_LINES_PER_EDGE = 8
 _LIST_META = ("index", "mask")   # edge metadata kept as a list of distinct values (calibration index text, bit mask)
+_MAX_STRUCT_DEPTH = 10      # nesting levels followed when a calibration struct is read as a whole
+_MAX_STRUCT_MEMBERS = 500    # member leaves kept per struct type (the rest is reported as truncated)
 _MAX_INDEX_VALUES = 20
 
 
@@ -366,6 +368,7 @@ class ClangExtractor:
         self.edges: dict = {}  # (src, tgt, rel) -> edge dict
         self.decl_only: set = set()
         self.ptr_to_rom: dict = {}
+        self._leaf_cache: dict = {}
         self.ptr_maps: dict = {}  # rel file -> {ptr: rom} (for the incremental cache)
         self.parse_errors = 0
         self.files_parsed = 0
@@ -695,6 +698,47 @@ class ClangExtractor:
 
     # ---- handlers ----------------------------------------------------------------
 
+    def _strip_arrays(self, t):
+        t = t.get_canonical()
+        while t.kind in self._array_kinds:
+            t = t.get_array_element_type().get_canonical()
+        return t
+
+    def _struct_leaves(self, t):
+        """-> (relative member paths of all leaf fields, truncated?) for a struct/union type, else ([], False).
+        Nested structs, arrays of structs and anonymous members are followed; array indices are not part of
+        the path (same plain-name rule as everywhere else)."""
+        t = self._strip_arrays(t)
+        if t.kind != self.T.RECORD:
+            return [], False
+        key = t.spelling
+        hit = self._leaf_cache.get(key)
+        if hit is not None:
+            return hit
+        out: list = []
+        truncated = [False]
+
+        def rec(tp, prefix, depth):
+            tp = self._strip_arrays(tp)
+            if tp.kind != self.T.RECORD:
+                if prefix:
+                    out.append(prefix)
+                return
+            if depth >= _MAX_STRUCT_DEPTH:
+                truncated[0] = True
+                return
+            for f in tp.get_fields():
+                if len(out) >= _MAX_STRUCT_MEMBERS:
+                    truncated[0] = True
+                    return
+                name = f.spelling
+                anonymous = (not name) or "(anonymous" in name or "(unnamed" in name
+                rec(f.type, prefix if anonymous else f"{prefix}.{name}", depth + 1)
+
+        rec(t, "", 0)
+        self._leaf_cache[key] = (out, truncated[0])
+        return self._leaf_cache[key]
+
     @staticmethod
     def _plain_and_index(path: str):
         """`.Tab[0][?i]` -> ('.Tab', '[0][i]', True). Indices and the run-time marker leave the node path;
@@ -732,6 +776,25 @@ class ClangExtractor:
         # (a number, or the run-time expression such as [i]); the element list comes from the A2L links.
         self.add_edge(fn_id, cal_id, "reads_calibration_field", sfile, line, "EXTRACTED", emeta)
         self.add_edge(base_id, cal_id, "exposes_calibration_field", sfile, line)
+        # A whole struct is read (`f(ptr->Feh)`, `&ptr->Feh`): the header type lists its members, so every
+        # leaf member gets its own node with the exact path. Which members the callee uses is not known: INFERRED.
+        try:
+            members, truncated = self._struct_leaves(cursor.type)
+        except Exception:  # pragma: no cover - libclang quirk
+            members, truncated = [], False
+        if members:
+            for rel in members:
+                m_path = f"{cal_path}{rel}"
+                m_id = make_id("calfield", m_path)
+                self.add_node(m_id, "calibration_field", sfile, name=m_path, line=line, metadata={
+                    "calibration_path": m_path, "accessed_via": base_name, "source_extractor": "clang",
+                    "from_struct_type": cal_path})
+                self.add_edge(fn_id, m_id, "reads_calibration_field", sfile, line, "INFERRED", {"via": "struct_type"})
+                self.add_edge(base_id, m_id, "exposes_calibration_field", sfile, line, "INFERRED")
+            if truncated:
+                self.nodes[cal_id]["metadata"]["members_truncated"] = True
+                LOG.debug("struct %s: member list truncated (depth %d / %d members)", cal_path,
+                          _MAX_STRUCT_DEPTH, _MAX_STRUCT_MEMBERS)
         return True
 
     def _handle_bitmask_access(self, cursor, fn_id, sfile):

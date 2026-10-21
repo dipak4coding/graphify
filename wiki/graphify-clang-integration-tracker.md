@@ -410,3 +410,14 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Link | `metadata.via = prefix`, `metadata.suffix = .an` |
 | Code node | `a2l_members` (merged with exact ones), `a2l_prefix_members` |
 | Coverage report | CODE = yes, code_nodes text `[prefix match: A2L symbol is longer than the code path]`. The member note now reads `ROM struct 'X' is in the code, but no code access to this member was found` |
+
+## 37. Whole-struct reads expand to member nodes (type-based)
+
+- Trigger: a calibration path whose C type is a struct/union is read as a whole (`f(ptr->Feh)`, `&ptr->Feh`).
+- The header type is walked with libclang (`get_fields()`): nested structs, arrays of structs, anonymous struct/union (flattened), bit-fields as leaves.
+- Each leaf gets a `calibration_field` node `<path>.<member path>` (no array indices), `from_struct_type` metadata.
+- Edges: function -> member `reads_calibration_field`, confidence `INFERRED`, `via: struct_type`; base -> member `exposes_calibration_field`.
+- Direct member reads (`ptr->Feh.flag.Bit`) are not expanded.
+- Limits: depth 10 (`_MAX_STRUCT_DEPTH`), 500 leaves per type (`_MAX_STRUCT_MEMBERS`); truncation flagged as `members_truncated` on the base node.
+- Prefix match (section 36) stays as fallback.
+
