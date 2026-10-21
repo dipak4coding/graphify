@@ -399,3 +399,4 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Project fact | No ROM struct in the symbol means "not calibratable, but measurable"; it is a normal case |
 | Join | The two-part restriction is removed again: a code node links to A2L characteristics / axis points by plain name, with or without a `.` |
 | Coverage report | The note `A2L symbol has a single part ... - check` is removed. The note `code has variable 'X', but no access to this member was found` appears only for struct members (a `.` in the plain symbol) |
+| Note kept | A2L entries whose symbol has no struct get the neutral note `no struct (plain variable, measurable)` in `param_coverage.csv` |

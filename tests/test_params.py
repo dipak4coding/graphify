@@ -317,10 +317,10 @@ def test_plain_variable_links_to_one_part_characteristic_without_anomaly_note():
     assert nodes[0]["metadata"]["a2l_characteristic_name"] == "Odd"
     assert any(e["source"] == "v" and e["relation"] == "mapped_to_a2l_characteristic" for e in edges)
     rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
-    assert rows["Odd"]["code"] is True and "single part" not in rows["Odd"]["note"]
+    assert rows["Odd"]["code"] is True and "no struct" in rows["Odd"]["note"] and "single part" not in rows["Odd"]["note"]
     # a plain A2L entry with no code variable: no "member" wording
     rows2 = {r["name"]: r for r in params.coverage_rows(a2l, [], [])}
-    assert "member" not in rows2["Odd"]["note"]
+    assert "member" not in rows2["Odd"]["note"] and "no struct" in rows2["Odd"]["note"]
 
 
 
