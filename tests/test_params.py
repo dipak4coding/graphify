@@ -287,3 +287,21 @@ def test_one_code_node_links_to_all_elements_by_plain_name():
     assert stats["unmatched_code"] == ["Cal.nothing"] and stats["unmatched_a2l"] == ["Cal.var_ko.y"]
     rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
     assert rows["Tab_ko[K1][P2]"]["code"] is True and rows["Cal.var_ko.y"]["code"] is False
+
+
+def test_mask_characteristics_keep_index_and_mask_on_links():
+    from graphify.extractors.a2l import Characteristic, join_a2l, patch_index
+    chars = {}
+    for name, mask in (("variable.k1", "0x1"), ("variable.k2", "0x2")):
+        c = Characteristic(char_type="VALUE", symbol_link=patch_index("Cal.variable._0_"), bit_mask=mask)
+        chars[name] = {"char_type": "VALUE", "internal_symbol": c.internal_symbol, "axis_references": []}
+    assert chars["variable.k2"]["internal_symbol"] == "Cal.variable[0]#2"
+    a2l = {"measurements": {}, "compu_methods": {}, "compu_vtabs": {}, "axis_pts": {}, "characteristics": chars}
+    nodes = [{"id": "v", "label": "Cal.variable", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "Cal.variable"}}]
+    edges: list = []
+    join_a2l(nodes, edges, a2l, "x.a2l")
+    links = sorted((e["metadata"]["characteristic"], e["metadata"]["index"], e["metadata"]["mask"])
+                   for e in edges if e["source"] == "v")
+    assert links == [("variable.k1", "[0]", "1"), ("variable.k2", "[0]", "2")]
+    assert nodes[0]["metadata"]["a2l_members"] == ["variable.k1", "variable.k2"]
