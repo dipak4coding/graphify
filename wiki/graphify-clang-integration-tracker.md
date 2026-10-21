@@ -400,3 +400,13 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Join | The two-part restriction is removed again: a code node links to A2L characteristics / axis points by plain name, with or without a `.` |
 | Coverage report | The note `A2L symbol has a single part ... - check` is removed. The note `code has variable 'X', but no access to this member was found` appears only for struct members (a `.` in the plain symbol) |
 | Note kept | A2L entries whose symbol has no struct get the neutral note `no struct (plain variable, measurable)` in `param_coverage.csv` |
+
+## 36. Prefix match: A2L symbol longer than the code path
+
+| Item | Detail |
+|---|---|
+| Case | A2L `abc_rom.variable.an`, C code reads `abc_rom.variable`: the member `.an` does not exist in the C code, so no exact match is possible |
+| Rule | After the exact join, every still-unmatched A2L entry links to the LONGEST code `calibration_field` path that is a prefix at a `.` boundary (`abc_rom.variable` of `abc_rom.variable.an`). The ROM struct variable (`abc_rom`) is never a target; an exact match always wins |
+| Link | `metadata.via = prefix`, `metadata.suffix = .an` |
+| Code node | `a2l_members` (merged with exact ones), `a2l_prefix_members` |
+| Coverage report | CODE = yes, code_nodes text `[prefix match: A2L symbol is longer than the code path]`. The member note now reads `ROM struct 'X' is in the code, but no code access to this member was found` |

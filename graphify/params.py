@@ -563,8 +563,9 @@ def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
         where = f"{n.get('label', '')} @ {n.get('source_file', '')}:{n.get('source_location', '')}".rstrip(":")
         linked = ({k for k in (m.get("a2l_characteristic_name"), m.get("a2l_axis_pts_name")) if k}
                   | set(m.get("a2l_members") or []) | set(m.get("a2l_axis_members") or []))
+        prefix = set(m.get("a2l_prefix_members") or [])
         for k in linked:
-            code_by_a2l.setdefault(k, []).append(where)
+            code_by_a2l.setdefault(k, []).append(where + (" [prefix match: A2L symbol is longer than the code path]" if k in prefix else ""))
         key = m.get("calibration_path") or n.get("label")
         if key and not linked:
             code_keys.setdefault(_norm_name(key), key)
@@ -589,7 +590,7 @@ def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
                 plain_sym = re.sub(r"\[[^\]]*\]", "", sym.split("#")[0])
                 root = re.split(r"[.\[]", sym, maxsplit=1)[0]
                 if "." in plain_sym and root in var_names:           # struct member: only the struct is in the code
-                    notes.append(f"code has variable '{root}', but no access to this member was found")
+                    notes.append(f"ROM struct '{root}' is in the code, but no code access to this member was found")
             hit = code_keys.get(_norm_name(sym or name))
             if hit:
                 notes.append(f"code symbol '{hit}' looks the same (case/index differs) - join missed it")

@@ -661,7 +661,7 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
                 _edge(char_id, axis_id, _axis_relation_name(cobj.get("char_type", ""), i))
         return char_id
 
-    def _link(node: dict, hits: list, relation: str, name_key: str, members_key: str) -> None:
+    def _link(node: dict, hits: list, relation: str, name_key: str, members_key: str, via: str = "") -> None:
         """Link one code node to every A2L entry that has its plain name (indices and mask ignored).
         The link carries the index text and the mask; the names stay as text on the code node."""
         meta = node.setdefault("metadata", {})
@@ -673,6 +673,9 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
                 em["index"] = idx
             if mask:
                 em["mask"] = int(mask) if str(mask).isdigit() else mask      # same type as the code's read edge
+            if via:
+                em["via"] = via
+                em["suffix"] = sym.split("#")[0][len(node.get("metadata", {}).get("calibration_path") or ""):]
             _edge(node["id"], target, relation, em)
         names = sorted(h[1] for h in hits)
         meta[members_key] = names[:MAX_STRUCT_MEMBERS]
@@ -719,6 +722,38 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
             _link(node, ahits, "mapped_to_a2l_axis_pts", "a2l_axis_pts_name", "a2l_axis_members")
             stats["axis_pts"] += 1
 
+
+    # A2L symbols that are longer than any code path (`rom.variable.an` while the code reads `rom.variable`):
+    # link them to the longest code path that is a prefix. Only calibration_field nodes count (never the
+    # ROM struct variable itself); an exact match always wins because matched symbols are skipped here.
+    cal_by_path = {}
+    for n in nodes:
+        if n.get("type") == "calibration_field":
+            key = split_symbol((n.get("metadata") or {}).get("calibration_path") or n.get("label") or "")[0]
+            if key:
+                cal_by_path.setdefault(key, n)
+    stats["prefix_links"] = 0
+    for plain, hits in char_by_plain.items():
+        rest = [h for h in hits if h[0] not in matched_syms]
+        if not rest or "." not in plain:
+            continue
+        parts = plain.split(".")
+        for k in range(len(parts) - 1, 0, -1):
+            node = cal_by_path.get(".".join(parts[:k]))
+            if node is None:
+                continue
+            old_members = list(node.get("metadata", {}).get("a2l_members") or [])
+            _link(node, rest, "mapped_to_a2l_characteristic", "a2l_characteristic_name", "a2l_members", via="prefix")
+            meta = node["metadata"]
+            merged = sorted(set(old_members) | {h[1] for h in rest})
+            meta["a2l_members"] = merged[:MAX_STRUCT_MEMBERS]
+            meta["a2l_member_count"] = len(merged)
+            if len(merged) != 1:
+                meta.pop("a2l_characteristic_name", None)
+            meta["a2l_prefix_members"] = sorted(set(meta.get("a2l_prefix_members") or []) | {h[1] for h in rest})[:MAX_STRUCT_MEMBERS]
+            matched_syms.update(h[0] for h in rest)
+            stats["prefix_links"] += len(rest)
+            break
 
     # Keep EVERY A2L characteristic and axis in the graph, matched or not, so nothing is silently
     # dropped; `code_matched` says whether a code node points at it.

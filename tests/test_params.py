@@ -239,7 +239,7 @@ def test_all_a2l_nodes_kept_and_struct_variable_is_not_a_match():
     assert sorted(stats["unmatched_a2l"]) == ["variable_ko.x", "variable_ko.y"]
     rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
     assert rows["variable_ko.x"]["code"] is False
-    assert "code has variable 'variable_ko'" in rows["variable_ko.x"]["note"]
+    assert "ROM struct 'variable_ko' is in the code" in rows["variable_ko.x"]["note"]
 
 
 def test_code_matched_flag_true_for_real_match():
@@ -339,3 +339,30 @@ def test_two_characteristics_with_same_symbol_link_and_different_bit_masks(tmp_p
     join_a2l(nodes, edges, parsed, "m.a2l")
     got = sorted((e["metadata"]["characteristic"], e["metadata"]["mask"]) for e in edges if e["source"] == "v")
     assert got == [("SystemReaction.Error_A", 4096), ("SystemReaction.Error_B", 2048)]
+
+
+def test_a2l_symbol_longer_than_code_path_links_by_prefix():
+    from graphify.extractors.a2l import join_a2l
+    chars = {"variable": {"char_type": "VALUE", "internal_symbol": "abc_rom.variable.an", "axis_references": []},
+             "exact_bit": {"char_type": "VALUE", "internal_symbol": "abc_rom.flags.bit1", "axis_references": []},
+             "orphan": {"char_type": "VALUE", "internal_symbol": "abc_rom.other.x", "axis_references": []}}
+    a2l = {"measurements": {}, "compu_methods": {}, "compu_vtabs": {}, "axis_pts": {}, "characteristics": chars}
+    nodes = [{"id": "rom", "label": "abc_rom", "type": "variable", "source_file": "k.c", "metadata": {}},
+             {"id": "v", "label": "abc_rom.variable", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "abc_rom.variable"}},
+             {"id": "fl", "label": "abc_rom.flags", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "abc_rom.flags"}},
+             {"id": "b1", "label": "abc_rom.flags.bit1", "type": "calibration_field", "source_file": "k.c",
+              "metadata": {"calibration_path": "abc_rom.flags.bit1"}}]
+    edges: list = []
+    stats = join_a2l(nodes, edges, a2l, "x.a2l")
+    v = nodes[1]["metadata"]
+    assert v["a2l_members"] == ["variable"] and v["a2l_characteristic_name"] == "variable" and v["a2l_prefix_members"] == ["variable"]
+    link = next(e for e in edges if e["source"] == "v")
+    assert link["metadata"]["via"] == "prefix" and link["metadata"]["suffix"] == ".an"
+    assert nodes[3]["metadata"]["a2l_characteristic_name"] == "exact_bit"        # exact match wins ...
+    assert "a2l_members" not in nodes[2]["metadata"]                              # ... so the parent is not linked
+    assert not any(e["source"] == "rom" for e in edges)                           # the ROM struct variable never is
+    assert stats["unmatched_a2l"] == ["orphan"] and stats["prefix_links"] == 1
+    rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
+    assert "prefix match" in rows["variable"]["code_nodes"] and rows["variable"]["code"] is True
