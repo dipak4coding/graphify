@@ -391,3 +391,11 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Rule (from the project) | A calibratable variable's symbol always has at least two parts (`kwsapp_rom.variable`); a non-calibratable one is the variable label alone |
 | Join | A code node links to A2L characteristics / axis points only when its plain name contains a `.`. A plain variable never links to a characteristic (it can still get `calibration_ref` from a measurement) |
 | Coverage report | An A2L characteristic or axis whose symbol has a single part gets the note `A2L symbol has a single part ... - check` |
+
+## 35. Rule of section 34 relaxed
+
+| Item | Detail |
+|---|---|
+| Project fact | No ROM struct in the symbol means "not calibratable, but measurable"; it is a normal case |
+| Join | The two-part restriction is removed again: a code node links to A2L characteristics / axis points by plain name, with or without a `.` |
+| Coverage report | The note `A2L symbol has a single part ... - check` is removed. The note `code has variable 'X', but no access to this member was found` appears only for struct members (a `.` in the plain symbol) |

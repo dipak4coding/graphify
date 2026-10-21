@@ -307,16 +307,21 @@ def test_mask_characteristics_keep_index_and_mask_on_links():
     assert nodes[0]["metadata"]["a2l_members"] == ["variable.k1", "variable.k2"]
 
 
-def test_plain_variable_never_links_to_characteristic_and_single_part_symbol_is_flagged():
+def test_plain_variable_links_to_one_part_characteristic_without_anomaly_note():
     from graphify.extractors.a2l import join_a2l
     a2l = {"measurements": {}, "compu_methods": {}, "compu_vtabs": {}, "axis_pts": {},
            "characteristics": {"Odd": {"char_type": "VALUE", "internal_symbol": "odd_var", "axis_references": []}}}
     nodes = [{"id": "v", "label": "odd_var", "type": "variable", "source_file": "k.c", "metadata": {}}]
     edges: list = []
     join_a2l(nodes, edges, a2l, "x.a2l")
-    assert not any(e["source"] == "v" for e in edges) and "a2l_characteristic_name" not in nodes[0]["metadata"]
+    assert nodes[0]["metadata"]["a2l_characteristic_name"] == "Odd"
+    assert any(e["source"] == "v" and e["relation"] == "mapped_to_a2l_characteristic" for e in edges)
     rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
-    assert "single part" in rows["Odd"]["note"]
+    assert rows["Odd"]["code"] is True and "single part" not in rows["Odd"]["note"]
+    # a plain A2L entry with no code variable: no "member" wording
+    rows2 = {r["name"]: r for r in params.coverage_rows(a2l, [], [])}
+    assert "member" not in rows2["Odd"]["note"]
+
 
 
 def test_two_characteristics_with_same_symbol_link_and_different_bit_masks(tmp_path):

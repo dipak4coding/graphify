@@ -578,16 +578,13 @@ def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
         where = code_by_a2l.get(name) or code_only.get(name) or []
         in_code = bool(where)
         notes = []
-        if in_a2l:
-            asym = (chars.get(name) or axp.get(name) or {}).get("internal_symbol", "")
-            if asym and "." not in asym.split("#")[0]:
-                notes.append("A2L symbol has a single part (a calibratable normally is struct.member) - check")
         if in_a2l and not in_code:
             sym = (chars.get(name) or axp.get(name) or {}).get("internal_symbol", "")
             if sym:
                 notes.append(f"A2L symbol: {sym}")
+                plain_sym = re.sub(r"\[[^\]]*\]", "", sym.split("#")[0])
                 root = re.split(r"[.\[]", sym, maxsplit=1)[0]
-                if root != sym and root in var_names:
+                if "." in plain_sym and root in var_names:           # struct member: only the struct is in the code
                     notes.append(f"code has variable '{root}', but no access to this member was found")
             hit = code_keys.get(_norm_name(sym or name))
             if hit:
