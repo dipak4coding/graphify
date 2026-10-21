@@ -722,15 +722,16 @@ class ClangExtractor:
         self.add_edge(fn_id, base_id, "reads_var", sfile, line)
         logical_base = self.ptr_to_rom[base_name]
 
-        plain, idx_text, variable = self._plain_and_index(path)
+        plain, idx_text, _runtime = self._plain_and_index(path)
         cal_path = f"{logical_base}{plain}"
         cal_id = make_id("calfield", cal_path)
         meta = {"calibration_path": cal_path, "accessed_via": base_name, "source_extractor": "clang"}
         self.add_node(cal_id, "calibration_field", sfile, name=cal_path, line=line, metadata=meta)
         emeta = {"index": idx_text} if idx_text else None
-        conf = "AMBIGUOUS" if variable else "EXTRACTED"     # a run-time index: which element is not known
-        self.add_edge(fn_id, cal_id, "reads_calibration_field", sfile, line, conf, emeta)
-        self.add_edge(base_id, cal_id, "exposes_calibration_field", sfile, line, conf)
+        # The read is certain at variable level; which element is read is the index text on the edge
+        # (a number, or the run-time expression such as [i]); the element list comes from the A2L links.
+        self.add_edge(fn_id, cal_id, "reads_calibration_field", sfile, line, "EXTRACTED", emeta)
+        self.add_edge(base_id, cal_id, "exposes_calibration_field", sfile, line)
         return True
 
     def _handle_bitmask_access(self, cursor, fn_id, sfile):
@@ -755,7 +756,7 @@ class ClangExtractor:
             line = cursor.location.line
             base_id = self._global_var(ref, sfile)
             self.add_edge(fn_id, base_id, "reads_var", sfile, line)
-            plain, idx_text, variable = self._plain_and_index(path)
+            plain, idx_text, _runtime = self._plain_and_index(path)
             cal_path = f"{self.ptr_to_rom[canonical.spelling]}{plain}"
             cal_id = make_id("calfield", cal_path)
             self.add_node(cal_id, "calibration_field", sfile, name=cal_path, line=line, metadata={
@@ -763,9 +764,8 @@ class ClangExtractor:
             emeta = {"mask": mask}
             if idx_text:
                 emeta["index"] = idx_text
-            conf = "AMBIGUOUS" if variable else "EXTRACTED"
-            self.add_edge(fn_id, cal_id, "reads_calibration_field", sfile, line, conf, emeta)
-            self.add_edge(base_id, cal_id, "exposes_calibration_field", sfile, line, conf)
+            self.add_edge(fn_id, cal_id, "reads_calibration_field", sfile, line, "EXTRACTED", emeta)
+            self.add_edge(base_id, cal_id, "exposes_calibration_field", sfile, line)
             return True
         return False
 

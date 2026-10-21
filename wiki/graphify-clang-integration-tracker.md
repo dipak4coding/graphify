@@ -374,7 +374,7 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Item | Detail |
 |---|---|
 | Code node | One `calibration_field` per variable path with all `[..]` removed: `Cal.Tab_ko`. Struct/member names stay (`Cal.var_ko.x` and `.y` are two nodes). No copies per element, no `[?]` |
-| Index of a read | On the read edge (`reads_calibration_field`): `metadata.index` = list of distinct texts, e.g. `["[0][1]", "[i]"]` (constants folded: `0u`, `0x1` -> `0`; run-time expressions keep their text). Run-time index -> edge confidence AMBIGUOUS |
+| Index of a read | On the read edge (`reads_calibration_field`): `metadata.index` = list of distinct texts, e.g. `["[0][1]", "[i]"]` (constants folded: `0u`, `0x1` -> `0`; run-time expressions keep their text). Read edges are EXTRACTED (certain at variable level); a run-time index is only visible as its text (`[i]`) |
 | Bit mask | Not a separate node any more (`Flags#2`): `metadata.mask` list on the read edge |
 | A2L key | `SYMBOL_LINK` (or link-map symbol), CANape `._0_` -> `[0]`, then split into plain name, index text, `#mask` (`split_symbol`). Whole-table types (CURVE, MAP, CUBOID) already arrive without the trailing index |
 | Join | Plain code name == plain A2L name. One code node -> every A2L entry with that plain name (`mapped_to_a2l_characteristic` / `mapped_to_a2l_axis_pts`) |

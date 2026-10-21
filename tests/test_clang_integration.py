@@ -63,7 +63,7 @@ def test_calibration_edges_and_ambiguous_expansion(toy):
     assert _edge(nodes, edges, "Kku_BerKuehlAnf()", "reads_calibration_field", "KkuAppROM.SW_T_Oel")
     assert _edge(nodes, edges, "KkuAppPtr", "exposes_calibration_field", "KkuAppROM.SW_T_Oel")
     amb = _edge(nodes, edges, "Kku_Task10ms()", "reads_calibration_field", "KkuAppROM.Kku_Tab_kl")
-    assert amb is not None and amb["confidence"] == "AMBIGUOUS"          # run-time index [i]: one node, no copies
+    assert amb is not None and amb["confidence"] == "EXTRACTED"          # run-time index [i]: one node, certain read
     assert amb["metadata"]["index"] == ["[i]"]
     assert not any(n["label"].startswith("KkuAppROM.Kku_Tab_kl[") for n in nodes)
     flag = _by_label(nodes, "KkuAppROM.Kku_Flags")
