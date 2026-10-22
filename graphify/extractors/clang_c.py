@@ -344,6 +344,36 @@ _INT_BINOPS = {"+": lambda a, b: a + b, "-": lambda a, b: a - b, "*": lambda a, 
                "<<": lambda a, b: a << b}
 _MAX_LINES_PER_EDGE = 8
 _LIST_META = ("index", "mask")   # edge metadata kept as a list of distinct values (calibration index text, bit mask)
+
+def split_index_groups(path: str):
+    """`.a[x[1].s.F][2].b` -> ('.a.b', ['[x[1].s.F]', '[2]']). Brackets are matched in pairs, so an index
+    expression that contains its own subscript or member access stays inside its group."""
+    plain, groups, depth, start = [], [], 0, 0
+    for i, ch in enumerate(path):
+        if ch == "[":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "]" and depth > 0:
+            depth -= 1
+            if depth == 0:
+                groups.append(path[start:i + 1])
+        elif depth == 0:
+            plain.append(ch)
+    if depth > 0:                                 # unbalanced: keep the rest as one group
+        groups.append(path[start:])
+    return "".join(plain), groups
+
+
+def _join_tokens(toks) -> str:
+    """Source tokens -> compact text: spaces only between two identifier-like tokens (`a [ i ] . s` -> `a[i].s`)."""
+    out = ""
+    for t in toks:
+        if out and (out[-1].isalnum() or out[-1] == "_") and (t[0].isalnum() or t[0] == "_"):
+            out += " "
+        out += t
+    return out
+
 _MAX_STRUCT_DEPTH = 10      # nesting levels followed when a calibration struct is read as a whole
 _MAX_STRUCT_MEMBERS = 500    # member leaves kept per struct type (the rest is reported as truncated)
 _MAX_INDEX_VALUES = 20
@@ -643,7 +673,7 @@ class ClangExtractor:
             if folded is not None:
                 return base, f"{base_path}[{folded}]", expand
             toks = [t.spelling for t in idx.get_tokens()]
-            return base, f"{base_path}[?{' '.join(toks) or '?'}]", expand      # run-time index: keep the expression text
+            return base, f"{base_path}[?{_join_tokens(toks) or '?'}]", expand      # run-time index: keep the expression text
         if cursor.kind in self._pass_pt:
             kids = list(cursor.get_children())
             if kids:
@@ -743,15 +773,14 @@ class ClangExtractor:
     def _plain_and_index(path: str):
         """`.Tab[0][?i]` -> ('.Tab', '[0][i]', True). Indices and the run-time marker leave the node path;
         the index text goes on the edge (True = at least one index is a run-time expression)."""
-        groups = re.findall(r"\[[^\]]*\]", path)
-        plain = re.sub(r"\[[^\]]*\]", "", path)
+        plain, groups = split_index_groups(path)
         return plain, "".join(g.replace("[?", "[", 1) for g in groups), any(g.startswith("[?") for g in groups)
 
     def _handle_calibration_access(self, cursor, fn_id, sfile):
         if fn_id is None:
             return False
         base, path, expand = self._resolve_access_path(cursor)
-        if base is None or not path or "." not in re.sub(r"\[[^\]]*\]", "", path):
+        if base is None or not path or "." not in split_index_groups(path)[0]:
             return False
         ref = base.referenced
         if ref is None or ref.kind != self.K.VAR_DECL:
@@ -805,7 +834,7 @@ class ClangExtractor:
             return False
         for member_side, mask_side in (kids, list(reversed(kids))):
             base, path, expand = self._resolve_access_path(member_side)
-            if base is None or "." not in re.sub(r"\[[^\]]*\]", "", path):
+            if base is None or "." not in split_index_groups(path)[0]:
                 continue
             mask = self._eval_int(mask_side)
             if mask is None:
@@ -835,7 +864,7 @@ class ClangExtractor:
     def _resolve_cal_field(self, arg):
         expr = self._unwrap(arg)
         base, path, expand = self._resolve_access_path(expr)
-        if base is None or "." not in re.sub(r"\[[^\]]*\]", "", path):
+        if base is None or "." not in split_index_groups(path)[0]:
             return None
         ref = base.referenced
         if ref is None or ref.kind != self.K.VAR_DECL:

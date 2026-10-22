@@ -546,3 +546,21 @@ def test_whole_struct_read_expands_to_member_nodes_from_the_header_type(tmp_path
     one = {e["target"]: e for e in edges if e["relation"] == "reads_calibration_field" and e["source"] == ids["One()"]}
     assert ids["Rom.Feh.flag.AdcPSpeicher"] in one and ids["Rom.Feh.flag.Other"] not in one       # direct read: no expansion
     assert one[ids["Rom.Feh.flag.AdcPSpeicher"]]["confidence"] == "EXTRACTED"
+
+
+def test_index_expression_with_own_subscript_and_member_is_one_index(tmp_path):
+    """`Ptr->feh_ko[Tab[i].s.FID]`: the nested brackets must not leak `.s.FID]` into the node path."""
+    (tmp_path / "t.h").write_text(
+        "typedef struct { short feh_ko[100]; } ROM_T;\ntypedef struct { struct { unsigned FID; } s; } E_T;\n", encoding="utf-8")
+    (tmp_path / "t.c").write_text(
+        '#include "t.h"\nstatic const ROM_T Rom = {0};\nconst ROM_T *Ptr;\nE_T Tab[4];\nshort Out;\n'
+        "void Bios_RegisterCalibrationData(void **p, const void *r, int n);\n"
+        "void Init(void) { Bios_RegisterCalibrationData((void **)&Ptr, &Rom, 4); }\n"
+        "void Use(int i) { Out = Ptr->feh_ko[Tab[i].s.FID]; }\n", encoding="utf-8")
+    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    nodes, edges = _run(tmp_path)
+    paths = {n["metadata"]["calibration_path"] for n in nodes if n.get("type") == "calibration_field"}
+    assert paths == {"Rom.feh_ko"}, paths
+    ids = {n["label"]: n["id"] for n in nodes}
+    e = [x for x in edges if x["relation"] == "reads_calibration_field" and x["source"] == ids["Use()"]][0]
+    assert e["metadata"]["index"] == ["[Tab[i].s.FID]"], e["metadata"]

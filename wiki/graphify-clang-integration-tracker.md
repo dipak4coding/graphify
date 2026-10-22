@@ -427,3 +427,9 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 - Symptom: struct with many elements x bits; only the first ~200 A2L entries (alphabetical) showed as found in code, the rest "not found in code" although the edges existed.
 - Cause: `coverage_rows` used `a2l_members` on the code node, which is cut to `MAX_STRUCT_MEMBERS` (200).
 - Fix: `coverage_rows(..., edges)` also reads `mapped_to_a2l_*` edges (complete). Node lists stay capped (display only).
+
+## 39. Nested brackets in a run-time index (fix)
+
+- Case: `Ptr->feh_ko[Tab[i].s.FID]`. The old regex `\[[^\]]*\]` stopped at the first `]` and left `.s.FID]` in the node path (`Rom.feh_ko.s.FID]`), so it never matched the A2L symbol `Rom.feh_ko._79_`.
+- Fix: `split_index_groups()` matches brackets in pairs; used for the node path, the index text and the `"." in path` checks.
+- Index text is now compact (`[Tab[i].s.FID]`, not `[Tab [ i ] . s . FID]`).
