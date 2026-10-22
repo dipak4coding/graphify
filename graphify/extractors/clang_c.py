@@ -1599,7 +1599,7 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
                 if a2l_parsed is None:
                     _warn_once("parnoa2l", "--par given without --a2l: values are stored, but the "
                                            "A2L/PAR/code coverage report needs the A2L too.")
-                stats["par"] = extraction_step(par_path, a2l_parsed, all_nodes, out, cfg.par_name or "")
+                stats["par"] = extraction_step(par_path, a2l_parsed, all_nodes, out, cfg.par_name or "", edges=all_edges)
                 t = stats["par"].get("totals")
                 print(f"[graphify] parameters: dataset '{stats['par']['dataset']}', {stats['par']['entries']} entries"
                       + (f" | A2L {t['in_a2l']}, PAR {t['in_par']}, code {t['in_code']} of {t['parameters']} names; "

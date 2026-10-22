@@ -421,3 +421,9 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 - Limits: depth 10 (`_MAX_STRUCT_DEPTH`), 500 leaves per type (`_MAX_STRUCT_MEMBERS`); truncation flagged as `members_truncated` on the base node.
 - Prefix match (section 36) stays as fallback.
 
+
+## 38. Coverage report read a capped list (fix)
+
+- Symptom: struct with many elements x bits; only the first ~200 A2L entries (alphabetical) showed as found in code, the rest "not found in code" although the edges existed.
+- Cause: `coverage_rows` used `a2l_members` on the code node, which is cut to `MAX_STRUCT_MEMBERS` (200).
+- Fix: `coverage_rows(..., edges)` also reads `mapped_to_a2l_*` edges (complete). Node lists stay capped (display only).

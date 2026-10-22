@@ -366,3 +366,17 @@ def test_a2l_symbol_longer_than_code_path_links_by_prefix():
     assert stats["unmatched_a2l"] == ["orphan"] and stats["prefix_links"] == 1
     rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
     assert "prefix match" in rows["variable"]["code_nodes"] and rows["variable"]["code"] is True
+
+
+def test_coverage_uses_edges_when_the_member_list_is_capped():
+    """A struct with more A2L entries than MAX_STRUCT_MEMBERS: all of them must count as found in code."""
+    names = [f"var_ko[{i}].b{b}" for i in range(40) for b in range(8)]          # 320 > 200
+    a2l = {"characteristics": {n: {"internal_symbol": "Rom.var_ko"} for n in names}, "axis_pts": {}}
+    node = {"id": "c1", "type": "calibration_field", "label": "Rom.var_ko", "source_file": "a.c",
+            "metadata": {"calibration_path": "Rom.var_ko", "a2l_members": sorted(names)[:200]}}
+    edges = [{"source": "c1", "target": f"a{i}", "relation": "mapped_to_a2l_characteristic",
+              "metadata": {"characteristic": n}} for i, n in enumerate(names)]
+    old = {r["name"]: r for r in params.coverage_rows(a2l, [], [node])}
+    new = {r["name"]: r for r in params.coverage_rows(a2l, [], [node], edges)}
+    assert sum(1 for r in old.values() if r["code"]) == 200
+    assert all(r["code"] for r in new.values()) and len(new) == 320

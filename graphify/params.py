@@ -539,7 +539,7 @@ def _norm_name(n: str) -> str:
     return re.sub(r"\[[^\]]*\]", "", str(n)).replace(".", "_").replace("->", "_").lower()
 
 
-def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
+def coverage_rows(a2l: dict, entries: list, nodes: list, edges: list | None = None) -> list:
     """One row per parameter name seen in A2L, PAR or code.
 
     A2L = characteristic or axis-points name in the A2L. PAR = entry in the .par (a bit
@@ -555,6 +555,13 @@ def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
     code_by_a2l: dict = {}
     code_only: dict = {}
     code_keys: dict = {}              # normalised code key -> label, for near-miss hints
+    linked_by_edge: dict = {}
+    for e in edges or []:
+        if e.get("relation") in ("mapped_to_a2l_characteristic", "mapped_to_a2l_axis_pts"):
+            em = e.get("metadata") if isinstance(e.get("metadata"), dict) else {}
+            k = em.get("characteristic") or em.get("axis")
+            if k:
+                linked_by_edge.setdefault(e.get("source"), set()).add(k)
     var_names = {n.get("label") for n in nodes if n.get("type") == "variable" and n.get("file_type") != "document"}
     for n in nodes:
         if n.get("type") not in ("variable", "calibration_field") or n.get("file_type") == "document":
@@ -562,7 +569,8 @@ def coverage_rows(a2l: dict, entries: list, nodes: list) -> list:
         m = n.get("metadata") if isinstance(n.get("metadata"), dict) else {}
         where = f"{n.get('label', '')} @ {n.get('source_file', '')}:{n.get('source_location', '')}".rstrip(":")
         linked = ({k for k in (m.get("a2l_characteristic_name"), m.get("a2l_axis_pts_name")) if k}
-                  | set(m.get("a2l_members") or []) | set(m.get("a2l_axis_members") or []))
+                  | set(m.get("a2l_members") or []) | set(m.get("a2l_axis_members") or [])
+                  | linked_by_edge.get(n.get("id"), set()))      # edges are complete; the node's name lists are capped
         prefix = set(m.get("a2l_prefix_members") or [])
         for k in linked:
             code_by_a2l.setdefault(k, []).append(where + (" [prefix match: A2L symbol is longer than the code path]" if k in prefix else ""))
@@ -646,7 +654,7 @@ def write_coverage(out_dir, rows: list, dataset: str = "") -> dict:
     return {"totals": totals, "by_status": counts, "csv": str(out / "param_coverage.csv")}
 
 
-def extraction_step(par_path, a2l, nodes: list, out_dir, name: str = "", db_path=None) -> dict:
+def extraction_step(par_path, a2l, nodes: list, out_dir, name: str = "", db_path=None, edges: list | None = None) -> dict:
     """Used by the clang pass: import the .par into the databank, then write the coverage report.
 
     ``a2l`` is the scanned A2L (``scan_a2l``) or None. Never raises on a bad .par."""
@@ -664,7 +672,7 @@ def extraction_step(par_path, a2l, nodes: list, out_dir, name: str = "", db_path
         conn.close()
     res = {"dataset": name, "entries": len(entries), "unparsed": len(unparsed), "databank": str(db)}
     if a2l:
-        res.update(write_coverage(out_dir, coverage_rows(a2l, entries, nodes), name))
+        res.update(write_coverage(out_dir, coverage_rows(a2l, entries, nodes, edges), name))
         res["import_checks"] = {k: len(v) for k, v in rep.items()}
         (Path(out_dir) / f"params_import_{re.sub(r'[^A-Za-z0-9_.-]+', '_', name)}.json").write_text(
             json.dumps(rep, indent=1, ensure_ascii=False), encoding="utf-8")
