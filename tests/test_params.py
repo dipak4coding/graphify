@@ -380,3 +380,24 @@ def test_coverage_uses_edges_when_the_member_list_is_capped():
     new = {r["name"]: r for r in params.coverage_rows(a2l, [], [node], edges)}
     assert sum(1 for r in old.values() if r["code"]) == 200
     assert all(r["code"] for r in new.values()) and len(new) == 320
+
+
+def test_union_alias_links_only_the_a2l_entry_with_the_same_mask():
+    from graphify.extractors.a2l import join_a2l
+    chars = {"g07": {"char_type": "VALUE", "internal_symbol": "xROM.v[2].Bits.Gang_07#128", "axis_references": []},
+             "g06": {"char_type": "VALUE", "internal_symbol": "xROM.v[2].Bits.Gang_06#64", "axis_references": []}}
+    a2l = {"measurements": {}, "compu_methods": {}, "compu_vtabs": {}, "axis_pts": {}, "characteristics": chars}
+    node = {"id": "g", "label": "xROM.v.Gesamt", "type": "calibration_field", "source_file": "k.c",
+            "metadata": {"calibration_path": "xROM.v.Gesamt", "union_masks": [128],
+                         "union_aliases": ["xROM.v.Bits.Gang_06", "xROM.v.Bits.Gang_07"]}}
+    edges: list = []
+    stats = join_a2l([node], edges, a2l, "x.a2l")
+    assert node["metadata"]["a2l_members"] == ["g07"] and stats["union_links"] == 1
+    link = next(e for e in edges if e["source"] == "g")
+    assert link["metadata"]["via"] == "union" and link["metadata"]["mask"] == 128 and "suffix" not in link["metadata"]
+    # a read without a mask links every bit of the union member
+    node2 = {"id": "h", "label": "xROM.v.Gesamt", "type": "calibration_field", "source_file": "k.c",
+             "metadata": {"calibration_path": "xROM.v.Gesamt", "union_unmasked": True, "union_masks": [128],
+                          "union_aliases": ["xROM.v.Bits.Gang_06", "xROM.v.Bits.Gang_07"]}}
+    join_a2l([node2], [], a2l, "x.a2l")
+    assert node2["metadata"]["a2l_members"] == ["g06", "g07"]

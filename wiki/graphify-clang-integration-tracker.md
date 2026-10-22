@@ -433,3 +433,10 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 - Case: `Ptr->feh_ko[Tab[i].s.FID]`. The old regex `\[[^\]]*\]` stopped at the first `]` and left `.s.FID]` in the node path (`Rom.feh_ko.s.FID]`), so it never matched the A2L symbol `Rom.feh_ko._79_`.
 - Fix: `split_index_groups()` matches brackets in pairs; used for the node path, the index text and the `"." in path` checks.
 - Index text is now compact (`[Tab[i].s.FID]`, not `[Tab [ i ] . s . FID]`).
+
+## 40. Union members: `P.Gesamt` in code, `P.Bits.Gang_07` in A2L
+
+- Clang: when the read member is a field of a union, `_note_union` records the sibling paths (`union_aliases`, leaves of struct siblings via the header type) and the mask(s) of the reads (`union_masks`, `union_unmasked` if some read had no constant mask).
+- Join (before the prefix pass): alias paths are looked up among the A2L characteristics; if every read had a mask, only the entry whose bit mask equals it is linked, else all entries. Link metadata `via: union`, node metadata `a2l_union_members`, stats `union_links`.
+- Coverage note: `[union match: same storage through a sibling union member]`.
+- Needs a constant mask (`1u << ENUM` folds; a run-time shift gives all bits of the member).

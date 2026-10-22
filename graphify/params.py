@@ -572,8 +572,10 @@ def coverage_rows(a2l: dict, entries: list, nodes: list, edges: list | None = No
                   | set(m.get("a2l_members") or []) | set(m.get("a2l_axis_members") or [])
                   | linked_by_edge.get(n.get("id"), set()))      # edges are complete; the node's name lists are capped
         prefix = set(m.get("a2l_prefix_members") or [])
+        union = set(m.get("a2l_union_members") or [])
         for k in linked:
-            code_by_a2l.setdefault(k, []).append(where + (" [prefix match: A2L symbol is longer than the code path]" if k in prefix else ""))
+            code_by_a2l.setdefault(k, []).append(where + (" [prefix match: A2L symbol is longer than the code path]" if k in prefix else "")
+                                          + (" [union match: same storage through a sibling union member]" if k in union else ""))
         key = m.get("calibration_path") or n.get("label")
         if key and not linked:
             code_keys.setdefault(_norm_name(key), key)

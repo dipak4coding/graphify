@@ -728,6 +728,40 @@ class ClangExtractor:
 
     # ---- handlers ----------------------------------------------------------------
 
+    def _note_union(self, expr, plain_path, cal_id, mask):
+        """The read member is a field of a union (`Gesamt` next to `Bits`): the A2L may describe the same
+        storage through a sibling member. Record the sibling paths and the mask(s) used, for the A2L join."""
+        e = self._unwrap(expr)
+        if e.kind != self.K.MEMBER_REF_EXPR:
+            return
+        decl = e.referenced
+        parent = decl.semantic_parent if decl is not None else None
+        if parent is None or parent.kind != self.K.UNION_DECL or "." not in plain_path:
+            return
+        stem = plain_path.rsplit(".", 1)[0]
+        aliases = set()
+        try:
+            for f in parent.type.get_fields():
+                if f.spelling == decl.spelling:
+                    continue
+                anonymous = (not f.spelling) or "(anonymous" in f.spelling or "(unnamed" in f.spelling
+                base = stem if anonymous else f"{stem}.{f.spelling}"
+                leaves, _t = self._struct_leaves(f.type)
+                if leaves:
+                    aliases.update(f"{base}{leaf}" for leaf in leaves)
+                elif not anonymous:
+                    aliases.add(base)
+        except Exception:  # pragma: no cover - libclang quirk
+            return
+        if not aliases:
+            return
+        meta = self.nodes[cal_id]["metadata"]
+        meta["union_aliases"] = sorted(set(meta.get("union_aliases") or []) | aliases)[:_MAX_STRUCT_MEMBERS]
+        if mask is None:
+            meta["union_unmasked"] = True
+        else:
+            meta["union_masks"] = sorted(set(meta.get("union_masks") or []) | {mask})
+
     def _strip_arrays(self, t):
         t = t.get_canonical()
         while t.kind in self._array_kinds:
@@ -805,6 +839,7 @@ class ClangExtractor:
         # (a number, or the run-time expression such as [i]); the element list comes from the A2L links.
         self.add_edge(fn_id, cal_id, "reads_calibration_field", sfile, line, "EXTRACTED", emeta)
         self.add_edge(base_id, cal_id, "exposes_calibration_field", sfile, line)
+        self._note_union(cursor, cal_path, cal_id, None)
         # A whole struct is read (`f(ptr->Feh)`, `&ptr->Feh`): the header type lists its members, so every
         # leaf member gets its own node with the exact path. Which members the callee uses is not known: INFERRED.
         try:
@@ -858,6 +893,7 @@ class ClangExtractor:
                 emeta["index"] = idx_text
             self.add_edge(fn_id, cal_id, "reads_calibration_field", sfile, line, "EXTRACTED", emeta)
             self.add_edge(base_id, cal_id, "exposes_calibration_field", sfile, line)
+            self._note_union(member_side, cal_path, cal_id, mask)
             return True
         return False
 

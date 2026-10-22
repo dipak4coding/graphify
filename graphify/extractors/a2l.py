@@ -675,7 +675,8 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
                 em["mask"] = int(mask) if str(mask).isdigit() else mask      # same type as the code's read edge
             if via:
                 em["via"] = via
-                em["suffix"] = sym.split("#")[0][len(node.get("metadata", {}).get("calibration_path") or ""):]
+                if via == "prefix":
+                    em["suffix"] = sym.split("#")[0][len(node.get("metadata", {}).get("calibration_path") or ""):]
             _edge(node["id"], target, relation, em)
         names = sorted(h[1] for h in hits)
         meta[members_key] = names[:MAX_STRUCT_MEMBERS]
@@ -722,6 +723,39 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
             _link(node, ahits, "mapped_to_a2l_axis_pts", "a2l_axis_pts_name", "a2l_axis_members")
             stats["axis_pts"] += 1
 
+
+    # Union members: the code reads `P.Gesamt`, the A2L describes the same storage as `P.Bits.Gang_07`.
+    # The clang pass recorded the sibling paths (`union_aliases`) and the mask(s) of the reads; link those
+    # A2L entries, narrowed to the entry whose bit mask equals the code mask when every read had one.
+    stats["union_links"] = 0
+    for node in nodes:
+        meta = node.get("metadata") or {}
+        aliases = meta.get("union_aliases")
+        if node.get("type") != "calibration_field" or not aliases:
+            continue
+        masks = {int(m) for m in meta.get("union_masks") or []}
+        restrict = bool(masks) and not meta.get("union_unmasked")
+        found = []
+        for alias in aliases:
+            for h in char_by_plain.get(alias, []):
+                if h[0] in matched_syms:
+                    continue
+                if restrict and not (str(h[4]).isdigit() and int(h[4]) in masks):
+                    continue
+                found.append(h)
+        if not found:
+            continue
+        old_members = list(meta.get("a2l_members") or [])
+        _link(node, found, "mapped_to_a2l_characteristic", "a2l_characteristic_name", "a2l_members", via="union")
+        meta = node["metadata"]
+        merged = sorted(set(old_members) | {h[1] for h in found})
+        meta["a2l_members"] = merged[:MAX_STRUCT_MEMBERS]
+        meta["a2l_member_count"] = len(merged)
+        if len(merged) != 1:
+            meta.pop("a2l_characteristic_name", None)
+        meta["a2l_union_members"] = sorted(set(meta.get("a2l_union_members") or []) | {h[1] for h in found})[:MAX_STRUCT_MEMBERS]
+        matched_syms.update(h[0] for h in found)
+        stats["union_links"] += len(found)
 
     # A2L symbols that are longer than any code path (`rom.variable.an` while the code reads `rom.variable`):
     # link them to the longest code path that is a prefix. Only calibration_field nodes count (never the

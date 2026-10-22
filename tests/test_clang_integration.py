@@ -564,3 +564,21 @@ def test_index_expression_with_own_subscript_and_member_is_one_index(tmp_path):
     ids = {n["label"]: n["id"] for n in nodes}
     e = [x for x in edges if x["relation"] == "reads_calibration_field" and x["source"] == ids["Use()"]][0]
     assert e["metadata"]["index"] == ["[Tab[i].s.FID]"], e["metadata"]
+
+
+def test_union_member_read_links_a2l_entry_of_sibling_bits_member_by_mask(tmp_path):
+    """Code reads `Ptr->tab[i].Gesamt & (1u << 7)`; the A2L describes `Rom.tab.Bits.Gang_07` (mask 128) and
+    `Rom.tab.Bits.Gang_06` (mask 64): only the entry with the same mask is linked."""
+    (tmp_path / "t.h").write_text(
+        "typedef union { unsigned short Gesamt; struct { unsigned short Gang_06:1; unsigned short Gang_07:1; } Bits; } M_T;\n"
+        "typedef struct { M_T tab[4]; } ROM_T;\n", encoding="utf-8")
+    (tmp_path / "t.c").write_text(
+        '#include "t.h"\nstatic const ROM_T Rom = {0};\nconst ROM_T *Ptr;\nshort Out;\n'
+        "void Bios_RegisterCalibrationData(void **p, const void *r, int n);\n"
+        "void Init(void) { Bios_RegisterCalibrationData((void **)&Ptr, &Rom, 4); }\n"
+        "void Use(int i) { Out = (Ptr->tab[i].Gesamt & (1u << 7)); }\n", encoding="utf-8")
+    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    nodes, edges = _run(tmp_path)
+    cal = [n for n in nodes if n.get("type") == "calibration_field" and n["metadata"]["calibration_path"] == "Rom.tab.Gesamt"][0]
+    assert cal["metadata"]["union_aliases"] == ["Rom.tab.Bits.Gang_06", "Rom.tab.Bits.Gang_07"]
+    assert cal["metadata"]["union_masks"] == [128] and not cal["metadata"].get("union_unmasked")
