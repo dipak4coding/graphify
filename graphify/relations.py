@@ -147,6 +147,13 @@ def metadata_lines(node: dict, indent: str = "  ") -> list:
     for key, label in _META_KEYS:
         if meta.get(key) not in (None, ""):
             out.append(f"{indent}{label + ':':<10} {meta[key]}")
+    if meta.get("summary"):
+        out.append(f"{indent}Summary:   {meta['summary']}")
+    cparams = meta.get("comment_params")
+    if isinstance(cparams, dict) and cparams:
+        out.append(f"{indent}Param doc: " + "; ".join(f"{k}: {v}" for k, v in list(cparams.items())[:8]))
+    if meta.get("comment_returns"):
+        out.append(f"{indent}Return doc: {meta['comment_returns']}")
     params = meta.get("parameters")
     if isinstance(params, list) and params:
         shown = ", ".join(f"{p.get('type', '')} {p.get('name', '')} ({p.get('role', '')})".strip()

@@ -582,3 +582,21 @@ def test_union_member_read_links_a2l_entry_of_sibling_bits_member_by_mask(tmp_pa
     cal = [n for n in nodes if n.get("type") == "calibration_field" and n["metadata"]["calibration_path"] == "Rom.tab.Gesamt"][0]
     assert cal["metadata"]["union_aliases"] == ["Rom.tab.Bits.Gang_06", "Rom.tab.Bits.Gang_07"]
     assert cal["metadata"]["union_masks"] == [128] and not cal["metadata"].get("union_unmasked")
+
+
+def test_function_header_comment_becomes_summary_params_returns(tmp_path):
+    (tmp_path / "t.c").write_text(
+        "/**-------------------------------\n"
+        "Funktion: Check\n  Ueberpruefen, ob Bedingungen vorliegen.\n<br><br>\n"
+        "Parameter:\n  Arg_Target\n    Zielzustand\n<br><br>\nRueckgabe:\n  0 nein\n  1 ja\n"
+        "-------------------------------*/\n"
+        "static int Check(int Arg_Target) { return Arg_Target; }\n"
+        "int NoDoc(void) { return 0; }\n", encoding="utf-8")
+    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    nodes, _ = _run(tmp_path)
+    fn = {n["label"]: n for n in nodes if n.get("type") == "function"}
+    m = fn["Check()"]["metadata"]
+    assert m["summary"] == "Ueberpruefen, ob Bedingungen vorliegen."
+    assert m["comment_params"] == {"Arg_Target": "Zielzustand"} and m["comment_returns"] == "0 nein | 1 ja"
+    assert m["comment_source"] == "code" and "Funktion: Check" in m["comment"]
+    assert "summary" not in fn["NoDoc()"]["metadata"]

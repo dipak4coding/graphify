@@ -303,3 +303,14 @@ Written to `graphify-out/` (`;`-separated, opens in Excel) together with `param_
 | `params.db` | `--par` |
 | `param_coverage.csv`, `param_coverage.json`, `params_import_<SET>.json` | `--par` (coverage needs `--a2l` too) |
 | `focus_report.json` | `graphify focus` |
+
+---
+
+## 17. [ADDED] Function descriptions from code comments
+
+| Item | Detail |
+|---|---|
+| Source | The header comment directly above the function (`/** ... */` or `///`). Plain `//` and `/* */` comments are only read if `-fparse-all-comments` is added to `extra_args` in `graphify-clang.json`. |
+| Understood layout | `Funktion:`, `Parameter:` (name, then indented text), `Rueckgabe:` (German) and the English words Function / Parameter / Return |
+| Stored on the function node | `summary`, `comment`, `comment_params`, `comment_returns`, `comment_source: code` |
+| Where it is shown | `explain F` (Summary, Param doc, Return doc); `explain F --inputs` (summary of F, and one line under each writer) |

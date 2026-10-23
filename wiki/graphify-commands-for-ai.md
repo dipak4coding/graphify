@@ -168,3 +168,12 @@ For GitHub Copilot in VS Code, the installer only sets up the CLI route (`vscode
 - Quote the A2L characteristic name (text) and the C `file:line`, not only node ids.
 - Say when a link comes from a type or a naming rule (`INFERRED`, `via: struct_type`, `via: union`, `via: prefix`).
 - Values come from `graphify params show` or `explain --inputs --dataset`; do not guess them from the A2L limits.
+
+---
+
+## 10. [ADDED] Function descriptions
+
+- Function nodes may carry `summary`, `comment`, `comment_params`, `comment_returns` (from the code comment above the function, `comment_source: code`).
+- `explain F` prints Summary / Param doc / Return doc. `explain F --inputs` prints the summary under each writer: use it before opening a producer function.
+- A missing summary means the function has no readable header comment (plain `//` comments are not read by default). Do not invent one.
+- The comment text is the author's, possibly outdated and mostly German. Quote it as such, and check the code for anything important.

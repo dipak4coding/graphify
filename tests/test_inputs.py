@@ -103,3 +103,17 @@ def test_cli_inputs_for_function(monkeypatch, tmp_path, capsys):
 def test_cli_inputs_on_a_variable_falls_back_to_plain_explain(monkeypatch, tmp_path, capsys):
     cap = _run(monkeypatch, tmp_path, capsys, "V1", "--inputs")
     assert "Node: V1" in cap.out and "applies to functions" in cap.err
+
+
+def test_writer_summary_is_printed_under_the_writer_and_capped():
+    g = _graph()
+    for n in g["nodes"]:
+        if n["id"] == "W1":
+            n["metadata"] = {"summary": "Berechnet den Sollwert " + "x" * 200}
+        if n["id"] == "F":
+            n["metadata"]["summary"] = "Hauptfunktion."
+    out = inputs_report(g, "F")
+    assert "Summary: Hauptfunktion." in out
+    line = out.split("<-- W1()  writes  W1.c:L44")[1].split("\n")[1]
+    assert line.strip().startswith("Berechnet den Sollwert") and len(line.strip()) <= 120 and line.endswith("...")
+    assert not out.split("<-- W2()  writes  W2.c:L9")[1].split("\n")[1].startswith("            ")   # no summary: no extra line

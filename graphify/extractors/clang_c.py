@@ -762,6 +762,29 @@ class ClangExtractor:
         else:
             meta["union_masks"] = sorted(set(meta.get("union_masks") or []) | {mask})
 
+    def _comment_meta(self, cursor) -> dict:
+        """Header comment of a function (doxygen-style `/** */` or `///`, read by libclang) -> metadata."""
+        try:
+            raw = cursor.raw_comment
+        except Exception:  # pragma: no cover - libclang quirk
+            return {}
+        if not raw:
+            return {}
+        from graphify.comments import parse_function_comment
+        c = parse_function_comment(raw, cursor.spelling)
+        meta = {}
+        if c.get("summary"):
+            meta["summary"] = c["summary"]
+        if c.get("comment"):
+            meta["comment"] = c["comment"]
+        if c.get("params"):
+            meta["comment_params"] = c["params"]
+        if c.get("returns"):
+            meta["comment_returns"] = c["returns"]
+        if meta:
+            meta["comment_source"] = "code"
+        return meta
+
     def _strip_arrays(self, t):
         t = t.get_canonical()
         while t.kind in self._array_kinds:
@@ -1053,7 +1076,8 @@ class ClangExtractor:
             ret = cursor.result_type.spelling if cursor.result_type else ""
             self.add_node(func_id, "function", fpath, name=f"{cursor.spelling}()", line=loc.line,
                           metadata={"return_type": ret, "has_definition": True,
-                                    "parameters": self._parameters(cursor), "source_extractor": "clang"},
+                                    "parameters": self._parameters(cursor), "source_extractor": "clang",
+                                    **self._comment_meta(cursor)},
                           definition=True)
             for child in cursor.get_children():
                 self.walk(child, func_id, fpath)
@@ -1092,7 +1116,8 @@ class ClangExtractor:
                 self.add_node(make_id(self.stem(fpath), cursor.spelling), "function", fpath,
                               name=f"{cursor.spelling}()", line=loc.line, decl_only=True,
                               metadata={"return_type": cursor.result_type.spelling if cursor.result_type else "",
-                                        "parameters": self._parameters(cursor), "source_extractor": "clang"})
+                                        "parameters": self._parameters(cursor), "source_extractor": "clang",
+                                        **self._comment_meta(cursor)})
             else:
                 self.skipped_extern_decls += 1
             return

@@ -41,6 +41,16 @@ def _facts(n: dict, address_taken: bool) -> str:
     return ", ".join(bits)
 
 
+MAX_SUMMARY_CHARS = 120
+
+
+def _summary(n: dict) -> str:
+    """One short line of the function's header comment, so the reader need not open the producer."""
+    m = n.get("metadata") if isinstance(n.get("metadata"), dict) else {}
+    t = str(m.get("summary") or "").strip()
+    return t if len(t) <= MAX_SUMMARY_CHARS else t[:MAX_SUMMARY_CHARS - 3].rstrip() + "..."
+
+
 def inputs_report(raw: dict, nid: str, depth: int = 1, fanout: int = 30, budget: int = 2000,
                   values=None) -> str:
     """Text report of the inputs of ``nid`` and their producers, ``depth`` producer hops deep.
@@ -74,6 +84,8 @@ def inputs_report(raw: dict, nid: str, depth: int = 1, fanout: int = 30, budget:
     head = [f"Inputs of {label(nid)}  [{me.get('source_file', '')} {me.get('source_location', '')}]".rstrip()
             + f"  (producer depth {depth})"]
     meta = me.get("metadata") if isinstance(me.get("metadata"), dict) else {}
+    if meta.get("summary"):
+        head.append(f"Summary: {meta['summary']}")
     params = meta.get("parameters")
     if isinstance(params, list) and params:
         head.append("Params: " + ", ".join(
@@ -112,12 +124,14 @@ def inputs_report(raw: dict, nid: str, depth: int = 1, fanout: int = 30, budget:
             if fn in stub_for:
                 lines.append(f"      writers collapsed: {stub_for[fn]['label']} - raise --fanout to list them")
                 continue
-            writers = sorted(((label(w['source']), _loc(w)) for w in in_e[v]
+            writers = sorted(((label(w['source']), _loc(w), _summary(nodes[w['source']])) for w in in_e[v]
                               if w["relation"] in WRITE and w["source"] != fn and typ.get(w["source"]) == "function"))
             if any(e["relation"] in WRITE and e["target"] == v for e in out_e[fn]):
                 lines.append(f"      also written by {label(fn)} itself (read-modify-write)")
-            for name, at in writers[:MAX_WRITERS]:
+            for name, at, summ in writers[:MAX_WRITERS]:
                 lines.append(f"      <-- {name}  writes  {at}".rstrip())
+                if summ:
+                    lines.append(f"            {summ}")
             if len(writers) > MAX_WRITERS:
                 lines.append(f"      ... +{len(writers) - MAX_WRITERS} more writers")
             if not writers:

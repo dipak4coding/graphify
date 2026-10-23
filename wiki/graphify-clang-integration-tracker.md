@@ -440,3 +440,14 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 - Join (before the prefix pass): alias paths are looked up among the A2L characteristics; if every read had a mask, only the entry whose bit mask equals it is linked, else all entries. Link metadata `via: union`, node metadata `a2l_union_members`, stats `union_links`.
 - Coverage note: `[union match: same storage through a sibling union member]`.
 - Needs a constant mask (`1u << ENUM` folds; a run-time shift gives all bits of the member).
+
+## 41. Function header comments (step 1 of descriptions)
+
+| Item | Detail |
+|---|---|
+| Source | `cursor.raw_comment` (libclang). Doxygen-style `/** */` and `///` above the function are read by default; plain `//` and `/* */` are NOT (they need `-fparse-all-comments` in `extra_args`) |
+| Parser | `graphify/comments.py`: handles `Funktion:` / `Function:`, `Parameter:`, `Rueckgabe:` / `Return:` blocks, `<br>`, dash rules; a comment without sections gives only summary + comment |
+| Node metadata (function, definition and header prototype) | `summary` (first sentence, <= 200 chars), `comment` (cleaned, <= 1500), `comment_params` {name: text}, `comment_returns`, `comment_source: code` |
+| `explain` / `get_node` | `Summary:`, `Param doc:`, `Return doc:` lines |
+| `explain F --inputs` | `Summary:` of F in the head; each writer gets its summary on the next line (capped to 120 chars) so the producer need not be opened |
+| Not yet | variables / macros / struct members; wiki pages; generated summaries |
