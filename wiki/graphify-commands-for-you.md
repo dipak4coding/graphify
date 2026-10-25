@@ -314,3 +314,5 @@ Written to `graphify-out/` (`;`-separated, opens in Excel) together with `param_
 | Understood layout | `Funktion:`, `Parameter:` (name, then indented text), `Rueckgabe:` (German) and the English words Function / Parameter / Return |
 | Stored on the function node | `summary`, `comment`, `comment_params`, `comment_returns`, `comment_source: code` |
 | Where it is shown | `explain F` (Summary, Param doc, Return doc); `explain F --inputs` (summary of F, and one line under each writer) |
+
+| Raw doxygen text **[ADDED]** | `metadata.doxygen` on function, variable and calibration nodes: the doxygen comment exactly as written (`/** */`, `///`, `///<`, ...). Missing comment = no key. Plain `//` and `/* */` are not doxygen and stay missing. For a calibration node it is the comment of the struct member (also for the members of an expanded struct). |

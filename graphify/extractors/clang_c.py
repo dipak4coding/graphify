@@ -374,6 +374,7 @@ def _join_tokens(toks) -> str:
         out += t
     return out
 
+_MAX_DOXYGEN = 8000        # characters of a doxygen comment kept per symbol (longer ones are cut and flagged)
 _MAX_STRUCT_DEPTH = 10      # nesting levels followed when a calibration struct is read as a whole
 _MAX_STRUCT_MEMBERS = 500    # member leaves kept per struct type (the rest is reported as truncated)
 _MAX_INDEX_VALUES = 20
@@ -399,6 +400,7 @@ class ClangExtractor:
         self.decl_only: set = set()
         self.ptr_to_rom: dict = {}
         self._leaf_cache: dict = {}
+        self._leaf_docs: dict = {}      # struct type spelling -> {relative member path: raw doxygen comment}
         self.ptr_maps: dict = {}  # rel file -> {ptr: rom} (for the incremental cache)
         self.parse_errors = 0
         self.files_parsed = 0
@@ -695,7 +697,7 @@ class ClangExtractor:
         vfile = str(loc.file) if loc.file else fallback_file
         node_id = make_id(self.stem(vfile), decl.spelling)
         self.add_node(node_id, "variable", vfile, name=decl.spelling, line=loc.line,
-                      definition=defn is not None, decl_only=defn is None)
+                      definition=defn is not None, decl_only=defn is None, metadata=self._doxygen_of(decl))
         return node_id
 
     def _is_global_var(self, ref):
@@ -762,6 +764,35 @@ class ClangExtractor:
         else:
             meta["union_masks"] = sorted(set(meta.get("union_masks") or []) | {mask})
 
+    @staticmethod
+    def _doxygen_of(cursor) -> dict:
+        """Doxygen comment of a declaration exactly as written (libclang keeps `/** */`, `/*! */`, `///`,
+        `//!` and the trailing forms `/**< */`, `///<`). No comment: no key."""
+        try:
+            raw = cursor.raw_comment
+        except Exception:  # pragma: no cover - libclang quirk
+            return {}
+        if not raw:
+            return {}
+        if len(raw) > _MAX_DOXYGEN:
+            return {"doxygen": raw[:_MAX_DOXYGEN], "doxygen_truncated": True}
+        return {"doxygen": raw}
+
+    def _member_doxygen(self, expr) -> dict:
+        """Doxygen comment of the struct member that an access expression ends in (`ptr->tab[i].x` -> `x`)."""
+        e = expr
+        for _ in range(8):
+            if e is None:
+                return {}
+            if e.kind == self.K.MEMBER_REF_EXPR:
+                d = e.referenced
+                return self._doxygen_of(d) if d is not None else {}
+            kids = list(e.get_children())
+            if not kids:
+                return {}
+            e = kids[0]
+        return {}
+
     def _comment_meta(self, cursor) -> dict:
         """Header comment of a function (doxygen-style `/** */` or `///`, read by libclang) -> metadata."""
         try:
@@ -803,13 +834,17 @@ class ClangExtractor:
         if hit is not None:
             return hit
         out: list = []
+        docs: dict = {}
         truncated = [False]
 
-        def rec(tp, prefix, depth):
+        def rec(tp, prefix, depth, fld=None):
             tp = self._strip_arrays(tp)
             if tp.kind != self.T.RECORD:
                 if prefix:
                     out.append(prefix)
+                    d = self._doxygen_of(fld) if fld is not None else {}
+                    if d:
+                        docs[prefix] = d
                 return
             if depth >= _MAX_STRUCT_DEPTH:
                 truncated[0] = True
@@ -820,9 +855,10 @@ class ClangExtractor:
                     return
                 name = f.spelling
                 anonymous = (not name) or "(anonymous" in name or "(unnamed" in name
-                rec(f.type, prefix if anonymous else f"{prefix}.{name}", depth + 1)
+                rec(f.type, prefix if anonymous else f"{prefix}.{name}", depth + 1, f)
 
         rec(t, "", 0)
+        self._leaf_docs[key] = docs
         self._leaf_cache[key] = (out, truncated[0])
         return self._leaf_cache[key]
 
@@ -855,7 +891,8 @@ class ClangExtractor:
         plain, idx_text, _runtime = self._plain_and_index(path)
         cal_path = f"{logical_base}{plain}"
         cal_id = make_id("calfield", cal_path)
-        meta = {"calibration_path": cal_path, "accessed_via": base_name, "source_extractor": "clang"}
+        meta = {"calibration_path": cal_path, "accessed_via": base_name, "source_extractor": "clang",
+                **self._member_doxygen(cursor)}
         self.add_node(cal_id, "calibration_field", sfile, name=cal_path, line=line, metadata=meta)
         emeta = {"index": idx_text} if idx_text else None
         # The read is certain at variable level; which element is read is the index text on the edge
@@ -870,12 +907,13 @@ class ClangExtractor:
         except Exception:  # pragma: no cover - libclang quirk
             members, truncated = [], False
         if members:
+            docs = self._leaf_docs.get(self._strip_arrays(cursor.type).spelling, {})
             for rel in members:
                 m_path = f"{cal_path}{rel}"
                 m_id = make_id("calfield", m_path)
                 self.add_node(m_id, "calibration_field", sfile, name=m_path, line=line, metadata={
                     "calibration_path": m_path, "accessed_via": base_name, "source_extractor": "clang",
-                    "from_struct_type": cal_path})
+                    "from_struct_type": cal_path, **docs.get(rel, {})})
                 self.add_edge(fn_id, m_id, "reads_calibration_field", sfile, line, "INFERRED", {"via": "struct_type"})
                 self.add_edge(base_id, m_id, "exposes_calibration_field", sfile, line, "INFERRED")
             if truncated:
@@ -910,7 +948,8 @@ class ClangExtractor:
             cal_path = f"{self.ptr_to_rom[canonical.spelling]}{plain}"
             cal_id = make_id("calfield", cal_path)
             self.add_node(cal_id, "calibration_field", sfile, name=cal_path, line=line, metadata={
-                "calibration_path": cal_path, "accessed_via": canonical.spelling, "source_extractor": "clang"})
+                "calibration_path": cal_path, "accessed_via": canonical.spelling, "source_extractor": "clang",
+                **self._member_doxygen(member_side)})
             emeta = {"mask": mask}
             if idx_text:
                 emeta["index"] = idx_text
@@ -1077,7 +1116,7 @@ class ClangExtractor:
             self.add_node(func_id, "function", fpath, name=f"{cursor.spelling}()", line=loc.line,
                           metadata={"return_type": ret, "has_definition": True,
                                     "parameters": self._parameters(cursor), "source_extractor": "clang",
-                                    **self._comment_meta(cursor)},
+                                    **self._comment_meta(cursor), **self._doxygen_of(cursor)},
                           definition=True)
             for child in cursor.get_children():
                 self.walk(child, func_id, fpath)
@@ -1097,7 +1136,7 @@ class ClangExtractor:
                 callee_id = make_id(self.stem(cfile), callee.spelling) if cfile else make_id("unknown", callee.spelling)
                 self.add_node(callee_id, "function", cfile, name=f"{callee.spelling}()", line=loc.line,
                               definition=defn is not None, decl_only=defn is None,
-                              metadata={"source_extractor": "clang"})
+                              metadata={"source_extractor": "clang", **self._doxygen_of(target)})
                 self.add_edge(fn_id, callee_id, "calls", sfile, cursor.location.line)
             self._handle_ipo(cursor, fn_id, sfile)
             if cursor.spelling in self.register_funcs:
@@ -1117,7 +1156,7 @@ class ClangExtractor:
                               name=f"{cursor.spelling}()", line=loc.line, decl_only=True,
                               metadata={"return_type": cursor.result_type.spelling if cursor.result_type else "",
                                         "parameters": self._parameters(cursor), "source_extractor": "clang",
-                                        **self._comment_meta(cursor)})
+                                        **self._comment_meta(cursor), **self._doxygen_of(cursor)})
             else:
                 self.skipped_extern_decls += 1
             return

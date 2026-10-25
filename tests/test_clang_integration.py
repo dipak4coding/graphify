@@ -600,3 +600,27 @@ def test_function_header_comment_becomes_summary_params_returns(tmp_path):
     assert m["comment_params"] == {"Arg_Target": "Zielzustand"} and m["comment_returns"] == "0 nein | 1 ja"
     assert m["comment_source"] == "code" and "Funktion: Check" in m["comment"]
     assert "summary" not in fn["NoDoc()"]["metadata"]
+
+
+def test_doxygen_comment_is_stored_raw_on_functions_variables_and_calibration_members(tmp_path):
+    (tmp_path / "t.h").write_text(
+        "typedef struct {\n  /** Schwelle in ms */\n  short Thr;\n  short Plain; /* not doxygen */\n  short Trail; ///< trailing doc\n"
+        "} FEH_T;\ntypedef struct { FEH_T Feh; /** direct member doc */ short Direct; } ROM_T;\n"
+        "/** Zaehler der Fehler */\nextern short Cnt;\n", encoding="utf-8")
+    (tmp_path / "t.c").write_text(
+        '#include "t.h"\nshort Cnt;\nstatic const ROM_T Rom = {0};\nconst ROM_T *Ptr;\nshort Out;\n'
+        "void Bios_RegisterCalibrationData(void **p, const void *r, int n);\n"
+        "void Init(void) { Bios_RegisterCalibrationData((void **)&Ptr, &Rom, 4); }\n"
+        "/** Liest alles. */\nvoid Use(FEH_T f) { Out = f.Thr + Cnt; }\n"
+        "/* plain function comment */\nvoid Plain(void) { Out = Ptr->Direct; }\n"
+        "void Whole(void) { Use(Ptr->Feh); }\n", encoding="utf-8")
+    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    nodes, _ = _run(tmp_path)
+    by = {n["label"]: n["metadata"] for n in nodes if n.get("metadata") is not None}
+    assert by["Use()"]["doxygen"] == "/** Liest alles. */"
+    assert "doxygen" not in by["Plain()"]                                  # plain comment: stays missing
+    assert by["Cnt"]["doxygen"] == "/** Zaehler der Fehler */"             # comment on the extern declaration in the header
+    assert by["Rom.Direct"]["doxygen"] == "/** direct member doc */"       # direct member access
+    assert by["Rom.Feh.Thr"]["doxygen"] == "/** Schwelle in ms */"         # leaf of an expanded struct
+    assert by["Rom.Feh.Trail"]["doxygen"] == "///< trailing doc"
+    assert "doxygen" not in by["Rom.Feh.Plain"]

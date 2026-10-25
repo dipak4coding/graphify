@@ -451,3 +451,15 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | `explain` / `get_node` | `Summary:`, `Param doc:`, `Return doc:` lines |
 | `explain F --inputs` | `Summary:` of F in the head; each writer gets its summary on the next line (capped to 120 chars) so the producer need not be opened |
 | Not yet | variables / macros / struct members; wiki pages; generated summaries |
+
+## 42. Raw doxygen comment as its own attribute (`doxygen`)
+
+| Item | Detail |
+|---|---|
+| Attribute | `metadata.doxygen` = the comment exactly as libclang returns it (delimiters included). No comment: the key is absent. `doxygen_truncated: true` if cut at 8000 chars. |
+| What counts | doxygen forms only: `/** */`, `/*! */`, `///`, `//!`, trailing `/**< */`, `///<`. Plain `//` and `/* */` stay missing (default libclang behaviour) |
+| Where it is stored | function nodes (definition, header prototype, callee), global variable nodes, `calibration_field` nodes (the comment of the struct member the access ends in; for an expanded struct, the comment of each leaf member) |
+| Redeclarations | comment on an `extern` declaration in a header is found for the variable defined in the .c file (libclang looks at all redeclarations) |
+| No nodes yet for | macros, typedefs, struct/enum types, enum constants, struct members that are never read: nothing to attach to |
+| Unchanged | `summary`, `comment`, `comment_params`, `comment_returns` (parsed form, functions only, section 41) stay as they are |
+| Not printed yet | `explain` / `--inputs` do not show `doxygen`; read it from `graph.json` |

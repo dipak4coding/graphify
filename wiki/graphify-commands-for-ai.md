@@ -177,3 +177,4 @@ For GitHub Copilot in VS Code, the installer only sets up the CLI route (`vscode
 - `explain F` prints Summary / Param doc / Return doc. `explain F --inputs` prints the summary under each writer: use it before opening a producer function.
 - A missing summary means the function has no readable header comment (plain `//` comments are not read by default). Do not invent one.
 - The comment text is the author's, possibly outdated and mostly German. Quote it as such, and check the code for anything important.
+- **[ADDED]** `metadata.doxygen` holds the raw doxygen comment of a function, variable or calibration member (as written, delimiters included); the key is absent if there is none. It is not printed by `explain` yet: read the node in `graph.json`, or ask for the node's metadata.
