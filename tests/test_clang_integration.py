@@ -592,7 +592,12 @@ def test_function_header_comment_becomes_summary_params_returns(tmp_path):
         "-------------------------------*/\n"
         "static int Check(int Arg_Target) { return Arg_Target; }\n"
         "int NoDoc(void) { return 0; }\n", encoding="utf-8")
-    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    cfg = tmp_path / "graphify-clang.json"
+    cfg.write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    off, _ = _run(tmp_path)                                                    # inactive by default
+    assert not any("summary" in (n.get("metadata") or {}) for n in off)
+    assert any("doxygen" in (n.get("metadata") or {}) for n in off)            # the raw text is still stored
+    cfg.write_text(json.dumps({"extra_args": ["-I."], "parse_comments": True}), encoding="utf-8")
     nodes, _ = _run(tmp_path)
     fn = {n["label"]: n for n in nodes if n.get("type") == "function"}
     m = fn["Check()"]["metadata"]

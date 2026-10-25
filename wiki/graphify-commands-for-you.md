@@ -306,7 +306,9 @@ Written to `graphify-out/` (`;`-separated, opens in Excel) together with `param_
 
 ---
 
-## 17. [ADDED] Function descriptions from code comments
+## 17. [ADDED] Function descriptions from code comments (INACTIVE by default)
+
+**Status:** the parsed fields below are switched off. Turn them on with `"parse_comments": true` in `graphify-clang.json`. The raw `doxygen` attribute (end of this guide) is always on.
 
 | Item | Detail |
 |---|---|

@@ -171,7 +171,9 @@ For GitHub Copilot in VS Code, the installer only sets up the CLI route (`vscode
 
 ---
 
-## 10. [ADDED] Function descriptions
+## 10. [ADDED] Function descriptions (parsed fields INACTIVE by default)
+
+- `summary` and the other parsed fields exist only if `"parse_comments": true` is set in `graphify-clang.json`. By default only `metadata.doxygen` (raw text) is stored.
 
 - Function nodes may carry `summary`, `comment`, `comment_params`, `comment_returns` (from the code comment above the function, `comment_source: code`).
 - `explain F` prints Summary / Param doc / Return doc. `explain F --inputs` prints the summary under each writer: use it before opening a producer function.

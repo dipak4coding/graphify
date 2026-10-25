@@ -82,6 +82,7 @@ class ClangConfig:
     append_args: list = field(default_factory=list)  # always appended, e.g. ["-DTRICORE=1", "--target=arm-none-eabi"]
     extractor: str = "both"  # treesitter | clang | both  (clang = replace tree-sitter's C output)
     header_declarations: bool = True  # also add `extern` variables / function prototypes declared in headers (file --contains--> symbol)
+    parse_comments: bool = False  # INACTIVE by default: also split function comments into summary/comment/comment_params/comment_returns (the raw `doxygen` text is always stored)
     debug: bool = False  # verbose log to stderr + graphify-out/clang_debug.log + clang_report.json
     source: str = "defaults"  # where the config came from (for the debug log)
 
@@ -103,7 +104,7 @@ def set_runtime_config(**kwargs) -> None:
 
 def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
     cfg = ClangConfig(base_dir=str(base_dir))
-    for key in ("enabled", "compile_commands", "libclang", "a2l", "par", "par_name", "debug", "header_declarations"):
+    for key in ("enabled", "compile_commands", "libclang", "a2l", "par", "par_name", "debug", "header_declarations", "parse_comments"):
         if key in data:
             setattr(cfg, key, data[key])
     if "extractor" in data:
@@ -794,7 +795,10 @@ class ClangExtractor:
         return {}
 
     def _comment_meta(self, cursor) -> dict:
-        """Header comment of a function (doxygen-style `/** */` or `///`, read by libclang) -> metadata."""
+        """Header comment of a function (doxygen-style `/** */` or `///`, read by libclang) -> parsed metadata.
+        Inactive unless `"parse_comments": true` is set in graphify-clang.json."""
+        if not self.cfg.parse_comments:
+            return {}
         try:
             raw = cursor.raw_comment
         except Exception:  # pragma: no cover - libclang quirk

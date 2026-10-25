@@ -463,3 +463,12 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | No nodes yet for | macros, typedefs, struct/enum types, enum constants, struct members that are never read: nothing to attach to |
 | Unchanged | `summary`, `comment`, `comment_params`, `comment_returns` (parsed form, functions only, section 41) stay as they are |
 | Not printed yet | `explain` / `--inputs` do not show `doxygen`; read it from `graph.json` |
+
+## 43. Parsed comment fields switched off (2026-10-25)
+
+| Item | Detail |
+|---|---|
+| Inactive by default | `summary`, `comment`, `comment_params`, `comment_returns`, `comment_source` (section 41) are no longer written |
+| Switch back on | `"parse_comments": true` in `graphify-clang.json` (`ClangConfig.parse_comments`) |
+| Still active | `metadata.doxygen` (raw text, section 42) |
+| Code kept | `graphify/comments.py`, `_comment_meta`, the `Summary:` lines in `explain` / `--inputs` (they print nothing when the fields are absent) |
