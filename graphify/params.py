@@ -2,7 +2,7 @@
 
 A dataset (one ``.par`` file = one parameter set) is imported into a small SQLite file
 (``params.db`` next to the graph). The graph only holds the A2L parameter name
-(``metadata.a2l_characteristic_name``); that name is the key into the databank.
+(the A2L name on the link edge, see ``a2l_links``); that name is the key into the databank.
 
 ``.par`` syntax handled (one entry per parameter, names are the A2L characteristic names)::
 
@@ -544,7 +544,7 @@ def coverage_rows(a2l: dict, entries: list, nodes: list, edges: list | None = No
 
     A2L = characteristic or axis-points name in the A2L. PAR = entry in the .par (a bit
     entry ``Parent.bitN`` counts for ``Parent``). CODE = a code node joined to that A2L name
-    (``metadata.a2l_characteristic_name`` / ``a2l_axis_pts_name``), or, for names the A2L does
+    (a ``mapped_to_a2l_*`` link edge), or, for names the A2L does
     not know, an unmatched ``calibration_field`` node."""
     chars, axp = a2l.get("characteristics", {}), a2l.get("axis_pts", {})
     a2l_kind = {**{n: "CHAR" for n in chars}, **{n: "AXIS" for n in axp}}
@@ -555,24 +555,18 @@ def coverage_rows(a2l: dict, entries: list, nodes: list, edges: list | None = No
     code_by_a2l: dict = {}
     code_only: dict = {}
     code_keys: dict = {}              # normalised code key -> label, for near-miss hints
-    linked_by_edge: dict = {}
-    for e in edges or []:
-        if e.get("relation") in ("mapped_to_a2l_characteristic", "mapped_to_a2l_axis_pts"):
-            em = e.get("metadata") if isinstance(e.get("metadata"), dict) else {}
-            k = em.get("characteristic") or em.get("axis")
-            if k:
-                linked_by_edge.setdefault(e.get("source"), set()).add(k)
+    from graphify.a2l_links import code_links
+    links = code_links(nodes, edges or [])          # the links are the only place that says which A2L entries a node has
     var_names = {n.get("label") for n in nodes if n.get("type") == "variable" and n.get("file_type") != "document"}
     for n in nodes:
         if n.get("type") not in ("variable", "calibration_field") or n.get("file_type") == "document":
             continue
         m = n.get("metadata") if isinstance(n.get("metadata"), dict) else {}
         where = f"{n.get('label', '')} @ {n.get('source_file', '')}:{n.get('source_location', '')}".rstrip(":")
-        linked = ({k for k in (m.get("a2l_characteristic_name"), m.get("a2l_axis_pts_name")) if k}
-                  | set(m.get("a2l_members") or []) | set(m.get("a2l_axis_members") or [])
-                  | linked_by_edge.get(n.get("id"), set()))      # edges are complete; the node's name lists are capped
-        prefix = set(m.get("a2l_prefix_members") or [])
-        union = set(m.get("a2l_union_members") or [])
+        mine = links.get(n.get("id"), [])
+        linked = {l["name"] for l in mine}
+        prefix = {l["name"] for l in mine if l["via"] == "prefix"}
+        union = {l["name"] for l in mine if l["via"] == "union"}
         for k in linked:
             code_by_a2l.setdefault(k, []).append(where + (" [prefix match: A2L symbol is longer than the code path]" if k in prefix else "")
                                           + (" [union match: same storage through a sibling union member]" if k in union else ""))

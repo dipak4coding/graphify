@@ -841,6 +841,7 @@ from graphify.relations import (  # noqa: E402
     intent_terms as _enrichment_intent_terms,
 )
 
+from graphify.a2l_links import graph_links as _graph_links, link_range as _link_range  # noqa: E402
 from graphify.relations import (  # noqa: E402
     address_taken_line as _address_taken_line,
     edge_flags as _edge_flags,
@@ -1129,8 +1130,9 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         _extra = ""
         if _kind:
             _extra += f" kind={sanitize_label(str(_kind))}"
-        if _meta.get("a2l_range"):
-            _extra += f" range={sanitize_label(str(_meta['a2l_range']))}"
+        _rng = _link_range(_graph_links(G, nid))
+        if _rng:
+            _extra += f" range={sanitize_label(_rng)}"
         if _meta.get("bit_mask") is not None:
             _extra += f" mask={_meta['bit_mask']}"
         if _meta.get("storage"):
@@ -2052,7 +2054,7 @@ def _build_server(graph_path: str):
                f"{sanitize_label(str(d.get('definition_location', '')))}"]
               if d.get("definition_file") else []),
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
-            *[sanitize_label(_ml) for _ml in _metadata_lines(d)],
+            *[sanitize_label(_ml) for _ml in _metadata_lines(d, links=_graph_links(G, nid))],
             *([_addr] if (_addr := _address_taken_line(G, nid)) else []),
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",

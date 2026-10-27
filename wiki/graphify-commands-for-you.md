@@ -251,6 +251,7 @@ Output: `graph.json`, `.graphify_labels.json`, `focus_report.json` (view with `g
 | One code node per variable path | `Rom.var_ko`, no indices. `[i]` and `[0][1]` are stored as text (`index`) on the read edge, a constant bit mask as `mask`. |
 | Join by plain name | The A2L SYMBOL_LINK `Rom.var_ko._12_` is read as plain name `Rom.var_ko`, index `[12]`; a BIT_MASK adds the mask (`#1024` = 0x400). |
 | One node, many A2L entries | Every A2L entry with that plain name is linked. The link carries `characteristic` (the A2L name as text), `index`, `mask`. |
+| **Where facts live (2026-10-27)** | Code node = code facts only (path, pointer, `doxygen`, counts). A2L node = all A2L facts (limits, type, axes, description). The link edge = index, mask, via. Nothing is stored twice; `explain` assembles the A2L lines through the links. A graph from an older run must be re-extracted. |
 | Exact match first | Then the other rules below, only for entries not yet matched. |
 | **Prefix match** | The A2L symbol is longer than the code path (`Rom.var.an` while the code reads `Rom.var`): linked to the longest code path that is a prefix. Link has `via: prefix`. (tracker §36) |
 | **Struct expansion** | The code reads a whole struct (`f(Ptr->Feh)`, `&Ptr->Feh`): the header type is walked (nested structs, arrays of structs, bit-fields, anonymous unions; depth 10, 500 members) and each leaf gets a node. Read edges are `INFERRED`, `via: struct_type`. (§37) |

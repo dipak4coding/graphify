@@ -105,11 +105,13 @@ def test_explain_inputs_prints_values(monkeypatch, tmp_path, capsys):
         "directed": False, "multigraph": False, "graph": {},
         "nodes": [
             {"id": "F", "label": "F()", "type": "function", "source_file": "k.c", "source_location": "L1", "community": 0},
-            {"id": "C", "label": "k_gain", "type": "calibration_field", "source_file": "k.c", "community": 0,
-             "metadata": {"a2l_characteristic_name": "Gain"}},
+            {"id": "C", "label": "k_gain", "type": "calibration_field", "source_file": "k.c", "community": 0},
+            {"id": "A", "label": "Gain", "type": "a2l_characteristic", "file_type": "document", "community": 0,
+             "metadata": {"min": 0.0, "max": 3.0}},
         ],
-        "links": [{"source": "F", "target": "C", "relation": "reads_calibration_field",
-                   "confidence": "EXTRACTED"}],
+        "links": [{"source": "F", "target": "C", "relation": "reads_calibration_field", "confidence": "EXTRACTED"},
+                  {"source": "C", "target": "A", "relation": "mapped_to_a2l_characteristic",
+                   "confidence": "EXTRACTED", "metadata": {"characteristic": "Gain"}}],
     }
     g = tmp_path / "graph.json"
     g.write_text(json.dumps(data))
@@ -127,7 +129,7 @@ def test_explain_inputs_prints_values(monkeypatch, tmp_path, capsys):
 def _nodes():
     return [
         {"id": "c1", "label": "k_gain", "type": "calibration_field", "source_file": "k.c", "source_location": "L3",
-         "metadata": {"a2l_characteristic_name": "Gain", "calibration_path": "k_gain"}},
+         "metadata": {"calibration_path": "k_gain"}},
         {"id": "c2", "label": "k_orphan", "type": "calibration_field", "source_file": "k.c", "source_location": "L4",
          "metadata": {"calibration_path": "k_orphan"}},
         {"id": "v1", "label": "DUMMY_MAP", "type": "variable", "source_file": "k.c", "source_location": "L5",
@@ -136,11 +138,16 @@ def _nodes():
     ]
 
 
+def _edges():
+    return [{"source": "c1", "target": "doc", "relation": "mapped_to_a2l_characteristic",
+             "metadata": {"characteristic": "Gain"}}]
+
+
 def test_coverage_rows_three_columns_and_status():
     a2l = json.loads(json.dumps(A2L))
     a2l["characteristics"]["Dummy_Map"]["internal_symbol"] = "Dummy_Map"
     entries, _, _ = params.parse_par(PAR)
-    rows = {r["name"]: r for r in params.coverage_rows(a2l, entries, _nodes())}
+    rows = {r["name"]: r for r in params.coverage_rows(a2l, entries, _nodes(), _edges())}
     assert (rows["Gain"]["a2l"], rows["Gain"]["par"], rows["Gain"]["code"], rows["Gain"]["status"]) == (True, True, True, "ok")
     assert rows["Mode"]["status"] == "not found in code"
     assert rows["Sw"]["par"] is True and rows["Sw"]["status"] == "not found in code"      # bits count for the parent
@@ -155,7 +162,7 @@ def test_extraction_step_writes_databank_and_reports(tmp_path):
     par = tmp_path / "a.par"
     par.write_text(PAR, encoding="utf-8")
     out = tmp_path / "out"
-    r = params.extraction_step(str(par), A2L, _nodes(), out, "setA")
+    r = params.extraction_step(str(par), A2L, _nodes(), out, "setA", edges=_edges())
     assert r["totals"]["in_par"] == 7 and (out / "params.db").is_file()
     csv_text = (out / "param_coverage.csv").read_text(encoding="utf-8-sig")
     assert csv_text.startswith("name;kind;a2l;par;code;status") and "Gain;CHAR;yes;yes;yes;ok" in csv_text
@@ -231,7 +238,7 @@ def test_all_a2l_nodes_kept_and_struct_variable_is_not_a_match():
     nodes = [{"id": "v", "label": "variable_ko", "type": "variable", "source_file": "k.c", "metadata": {}}]
     edges: list = []
     stats = join_a2l(nodes, edges, a2l, "x.a2l")
-    assert "a2l_members" not in nodes[0]["metadata"]
+    assert "a2l_member_count" not in nodes[0]["metadata"]
     assert not any(e["source"] == "v" for e in edges)                      # the struct is not linked
     a2l_nodes = {n["label"]: n for n in nodes if n.get("type") in ("a2l_characteristic", "a2l_axis")}
     assert set(a2l_nodes) == {"variable_ko.x", "variable_ko.y", "Ax"}      # every A2L entry is in the graph
@@ -275,17 +282,19 @@ def test_one_code_node_links_to_all_elements_by_plain_name():
               "metadata": {"calibration_path": "Cal.nothing"}}]
     edges: list = []
     stats = join_a2l(nodes, edges, a2l, "x.a2l")
+    from graphify.a2l_links import code_links, link_names, link_range
+    ln = code_links(nodes, edges)
     t = nodes[0]["metadata"]
-    assert t["a2l_member_count"] == 4 and "a2l_characteristic_name" not in t
-    assert t["a2l_members"] == sorted(n for n in chars if n.startswith("Tab_ko"))      # characteristic names kept as text
-    assert t["a2l_range"] == "0.0..40.0"
+    assert t["a2l_member_count"] == 4 and not any(k.startswith("a2l_") and k != "a2l_member_count" for k in t)   # A2L facts stay on the A2L nodes
+    assert link_names(ln["t"]) == sorted(n for n in chars if n.startswith("Tab_ko"))      # names come from the links
+    assert link_range(ln["t"]) == "0.0..40.0"
     links = {e["target"]: e["metadata"] for e in edges if e["source"] == "t"}
     assert links["a2lchar_tab_ko_k2_p1"] == {"characteristic": "Tab_ko[K2][P1]", "index": "[1][0]"}
-    assert nodes[1]["metadata"]["a2l_characteristic_name"] == "Cal.var_ko.x"             # struct members stay separate
+    assert link_names(ln["x"]) == ["Cal.var_ko.x"]                                       # struct members stay separate
     assert not any(e["source"] == "x" and e["target"].endswith("var_ko_y") for e in edges)
     assert {e["metadata"].get("mask") for e in edges if e["source"] == "f"} == {1, 2}
     assert stats["unmatched_code"] == ["Cal.nothing"] and stats["unmatched_a2l"] == ["Cal.var_ko.y"]
-    rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
+    rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes, edges)}
     assert rows["Tab_ko[K1][P2]"]["code"] is True and rows["Cal.var_ko.y"]["code"] is False
 
 
@@ -304,7 +313,8 @@ def test_mask_characteristics_keep_index_and_mask_on_links():
     links = sorted((e["metadata"]["characteristic"], e["metadata"]["index"], e["metadata"]["mask"])
                    for e in edges if e["source"] == "v")
     assert links == [("variable.k1", "[0]", 1), ("variable.k2", "[0]", 2)]
-    assert nodes[0]["metadata"]["a2l_members"] == ["variable.k1", "variable.k2"]
+    from graphify.a2l_links import code_links, link_names
+    assert link_names(code_links(nodes, edges)["v"]) == ["variable.k1", "variable.k2"]
 
 
 def test_plain_variable_links_to_one_part_characteristic_without_anomaly_note():
@@ -314,9 +324,9 @@ def test_plain_variable_links_to_one_part_characteristic_without_anomaly_note():
     nodes = [{"id": "v", "label": "odd_var", "type": "variable", "source_file": "k.c", "metadata": {}}]
     edges: list = []
     join_a2l(nodes, edges, a2l, "x.a2l")
-    assert nodes[0]["metadata"]["a2l_characteristic_name"] == "Odd"
-    assert any(e["source"] == "v" and e["relation"] == "mapped_to_a2l_characteristic" for e in edges)
-    rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
+    assert any(e["source"] == "v" and e["relation"] == "mapped_to_a2l_characteristic"
+               and e["metadata"]["characteristic"] == "Odd" for e in edges)
+    rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes, edges)}
     assert rows["Odd"]["code"] is True and "no struct" in rows["Odd"]["note"] and "single part" not in rows["Odd"]["note"]
     # a plain A2L entry with no code variable: no "member" wording
     rows2 = {r["name"]: r for r in params.coverage_rows(a2l, [], [])}
@@ -356,29 +366,28 @@ def test_a2l_symbol_longer_than_code_path_links_by_prefix():
               "metadata": {"calibration_path": "abc_rom.flags.bit1"}}]
     edges: list = []
     stats = join_a2l(nodes, edges, a2l, "x.a2l")
-    v = nodes[1]["metadata"]
-    assert v["a2l_members"] == ["variable"] and v["a2l_characteristic_name"] == "variable" and v["a2l_prefix_members"] == ["variable"]
+    from graphify.a2l_links import code_links, link_names
+    ln = code_links(nodes, edges)
+    assert link_names(ln["v"]) == ["variable"] and ln["v"][0]["via"] == "prefix"
     link = next(e for e in edges if e["source"] == "v")
     assert link["metadata"]["via"] == "prefix" and link["metadata"]["suffix"] == ".an"
-    assert nodes[3]["metadata"]["a2l_characteristic_name"] == "exact_bit"        # exact match wins ...
-    assert "a2l_members" not in nodes[2]["metadata"]                              # ... so the parent is not linked
+    assert link_names(ln["b1"]) == ["exact_bit"]                                  # exact match wins ...
+    assert "fl" not in ln                                                         # ... so the parent is not linked
     assert not any(e["source"] == "rom" for e in edges)                           # the ROM struct variable never is
     assert stats["unmatched_a2l"] == ["orphan"] and stats["prefix_links"] == 1
-    rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes)}
+    rows = {r["name"]: r for r in params.coverage_rows(a2l, [], nodes, edges)}
     assert "prefix match" in rows["variable"]["code_nodes"] and rows["variable"]["code"] is True
 
 
-def test_coverage_uses_edges_when_the_member_list_is_capped():
-    """A struct with more A2L entries than MAX_STRUCT_MEMBERS: all of them must count as found in code."""
-    names = [f"var_ko[{i}].b{b}" for i in range(40) for b in range(8)]          # 320 > 200
+def test_coverage_reads_all_links_from_edges_without_any_cap():
+    """A struct with 320 A2L entries (more than the old 200-name list): all of them count as found in code."""
+    names = [f"var_ko[{i}].b{b}" for i in range(40) for b in range(8)]
     a2l = {"characteristics": {n: {"internal_symbol": "Rom.var_ko"} for n in names}, "axis_pts": {}}
     node = {"id": "c1", "type": "calibration_field", "label": "Rom.var_ko", "source_file": "a.c",
-            "metadata": {"calibration_path": "Rom.var_ko", "a2l_members": sorted(names)[:200]}}
+            "metadata": {"calibration_path": "Rom.var_ko"}}
     edges = [{"source": "c1", "target": f"a{i}", "relation": "mapped_to_a2l_characteristic",
               "metadata": {"characteristic": n}} for i, n in enumerate(names)]
-    old = {r["name"]: r for r in params.coverage_rows(a2l, [], [node])}
     new = {r["name"]: r for r in params.coverage_rows(a2l, [], [node], edges)}
-    assert sum(1 for r in old.values() if r["code"]) == 200
     assert all(r["code"] for r in new.values()) and len(new) == 320
 
 
@@ -392,12 +401,14 @@ def test_union_alias_links_only_the_a2l_entry_with_the_same_mask():
                          "union_aliases": ["xROM.v.Bits.Gang_06", "xROM.v.Bits.Gang_07"]}}
     edges: list = []
     stats = join_a2l([node], edges, a2l, "x.a2l")
-    assert node["metadata"]["a2l_members"] == ["g07"] and stats["union_links"] == 1
+    from graphify.a2l_links import code_links, link_names
+    assert link_names(code_links([node], edges)["g"]) == ["g07"] and stats["union_links"] == 1
     link = next(e for e in edges if e["source"] == "g")
     assert link["metadata"]["via"] == "union" and link["metadata"]["mask"] == 128 and "suffix" not in link["metadata"]
     # a read without a mask links every bit of the union member
     node2 = {"id": "h", "label": "xROM.v.Gesamt", "type": "calibration_field", "source_file": "k.c",
              "metadata": {"calibration_path": "xROM.v.Gesamt", "union_unmasked": True, "union_masks": [128],
                           "union_aliases": ["xROM.v.Bits.Gang_06", "xROM.v.Bits.Gang_07"]}}
-    join_a2l([node2], [], a2l, "x.a2l")
-    assert node2["metadata"]["a2l_members"] == ["g06", "g07"]
+    edges2: list = []
+    join_a2l([node2], edges2, a2l, "x.a2l")
+    assert link_names(code_links([node2], edges2)["h"]) == ["g06", "g07"]

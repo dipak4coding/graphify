@@ -105,8 +105,7 @@ def relation_priority(relation: str) -> int:
 
 _META_KEYS = (
     ("calibration_path", "Calibration path"), ("calibration_ref", "Calibration ref"),
-    ("a2l_characteristic_name", "A2L characteristic"), ("a2l_axis_pts_name", "A2L axis"),
-    ("a2l_range", "Range"), ("bit_mask", "Bit mask"), ("accessed_via", "Accessed via"),
+    ("bit_mask", "Bit mask"), ("accessed_via", "Accessed via"),
     ("return_type", "Returns"),
     ("storage", "Storage"), ("defined_in", "Definition"), ("declaration_only", "Decl. only"),
 )
@@ -138,8 +137,15 @@ def address_taken_line(G, nid: str, indent: str = "  "):
     return None
 
 
-def metadata_lines(node: dict, indent: str = "  ") -> list:
-    """Printable enrichment facts for a node: kind, A2L link, range, parameters, ..."""
+def _names_text(names: list) -> str:
+    return names[0] if len(names) == 1 else f"{len(names)} entries, e.g. {', '.join(names[:3])}"
+
+
+def metadata_lines(node: dict, indent: str = "  ", links: list | None = None) -> list:
+    """Printable enrichment facts for a node: kind, A2L link, range, parameters, ...
+
+    ``links``: the node's A2L links (``a2l_links.code_links`` / ``graph_links``). The A2L facts are not
+    copied onto the code node; they are read through the links when printing."""
     out = []
     if node.get("type"):
         out.append(f"{indent}Kind:      {node['type']}")
@@ -147,6 +153,15 @@ def metadata_lines(node: dict, indent: str = "  ") -> list:
     for key, label in _META_KEYS:
         if meta.get(key) not in (None, ""):
             out.append(f"{indent}{label + ':':<10} {meta[key]}")
+    if links:
+        from graphify.a2l_links import link_names, link_range
+        for kind, label in (("char", "A2L characteristic"), ("axis", "A2L axis")):
+            names = link_names(links, kind)
+            if names:
+                out.append(f"{indent}{label + ':':<10} {_names_text(names)}")
+        rng = link_range(links)
+        if rng:
+            out.append(f"{indent}{'Range:':<10} {rng}")
     if meta.get("summary"):
         out.append(f"{indent}Summary:   {meta['summary']}")
     cparams = meta.get("comment_params")

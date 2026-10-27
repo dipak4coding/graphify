@@ -472,3 +472,17 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Switch back on | `"parse_comments": true` in `graphify-clang.json` (`ClangConfig.parse_comments`) |
 | Still active | `metadata.doxygen` (raw text, section 42) |
 | Code kept | `graphify/comments.py`, `_comment_meta`, the `Summary:` lines in `explain` / `--inputs` (they print nothing when the fields are absent) |
+
+## 44. One source of truth: A2L facts only on A2L nodes (2026-10-27)
+
+| Item | Detail |
+|---|---|
+| Decision | Option A: keep code nodes and A2L nodes separate, no merging; no fact is stored twice |
+| Code node (`calibration_field`) | code facts only: `calibration_path`, `accessed_via`, `doxygen`, `from_struct_type`, `union_aliases`/`union_masks`, `calibration_ref` (measurements have no node), plus the counts `a2l_member_count` / `a2l_axis_member_count` |
+| Removed from the code node | `a2l_members`, `a2l_axis_members`, `a2l_prefix_members`, `a2l_union_members`, `a2l_characteristic_name`, `a2l_axis_pts_name`, `a2l_range`, and the A2L description copied into `rationale` |
+| A2L node | all A2L facts (type, `min`/`max`, symbol, axes, description, `code_matched`) |
+| Link edge | `index`, `mask`, `via`, `suffix`, and the A2L name as text (`characteristic` / `axis`) |
+| New module | `graphify/a2l_links.py`: `code_links`, `graph_links`, `link_names`, `single_key`, `link_range`; every consumer reads the facts through the links |
+| Consumers changed | `explain` (A2L characteristic / axis / Range lines), `get_node`, NODE `range=` in `query`, `explain --inputs` (range, values lookup), coverage report, `join_a2l` statistics |
+| Side effects | the 200-name cap on the node is gone (it caused the 200-mapped bug); the A2L description is found by searching the A2L node, no longer on the code node |
+| Re-extraction | needed; a graph from before still has the old fields, and `explain` then shows no A2L lines for those nodes |

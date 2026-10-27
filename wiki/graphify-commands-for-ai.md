@@ -148,7 +148,7 @@ For GitHub Copilot in VS Code, the installer only sets up the CLI route (`vscode
 | Fact | Detail |
 |---|---|
 | Code node | One `calibration_field` per variable path without indices, e.g. `Rom.var_ko`. Metadata `calibration_path`, `accessed_via` (pointer name). |
-| Code -> A2L | Join on the plain name. A node can link to many A2L entries (one per index and bit). The A2L name is in the link (`characteristic`) and in node metadata `a2l_members` (first 200 only), `a2l_member_count`, `a2l_characteristic_name` (only if exactly one). |
+| Code -> A2L | Join on the plain name. A node can link to many A2L entries (one per index and bit). The A2L name is in the link edge (`characteristic` / `axis`). **Changed 2026-10-27:** the code node no longer holds `a2l_members`, `a2l_characteristic_name`, `a2l_range` etc.; only the counts `a2l_member_count` / `a2l_axis_member_count`. Limits, type, axes and description are on the A2L node (follow the `mapped_to_a2l_*` edge); `explain` prints them. |
 | Index and mask | On the read edge (`index`, `mask`) and on the A2L link. The A2L symbol `Rom.var_ko._12_` has plain name `Rom.var_ko`, index `[12]`. `#1024` after a symbol is the bit mask (0x400). |
 | Unmatched A2L entries | They are nodes too (`code_matched` false). Meaning: no code read was found for them. That can be genuine (unused ROM member) or a join gap. |
 | Not calibratable | A symbol without a ROM struct part is measurable only; it is still linked by plain name. |

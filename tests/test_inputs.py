@@ -25,9 +25,11 @@ def _e(s, t, rel, loc="L5", **meta):
 def _graph():
     nodes = [
         _n("F", "F()", sf="kku/kku.c", parameters=[{"type": "int", "name": "x", "role": "in"}]),
-        _n("V1", "V1", "variable", sf="vwh/oh.h", storage="global", defined_in="vwh/oh.c", a2l_range="0..100"),
+        _n("V1", "V1", "variable", sf="vwh/oh.h", storage="global", defined_in="vwh/oh.c"),
         _n("V2", "V2", "variable"), _n("V3", "V3", "variable", storage="static"),
-        _n("Cal", "Cal", "calibration_field", a2l_range="1..9"),
+        _n("Cal", "Cal", "calibration_field"),
+        _n("A1", "A1", "a2l_characteristic", sf="x.a2l", min=1, max=9),
+        _n("A2", "A2", "a2l_characteristic", sf="x.a2l", min=0, max=100),
         _n("W1", "W1()", sf="vwh/w1.c"), _n("W2", "W2()", sf="vwh/w2.c"), _n("W3", "W3()"),
         _n("V0", "V0", "variable"), _n("WW", "WW()", sf="x/ww.c"),
         _n("CA", "CA()"), _n("Other", "Other()"),
@@ -40,6 +42,8 @@ def _graph():
         _e("W1", "V0", "reads_var"), _e("WW", "V0", "writes_var", "L77"),
         _e("CA", "F", "calls"),
         _e("F", "Other", "calls"),                       # a callee is not an input
+        _e("Cal", "A1", "mapped_to_a2l_characteristic", characteristic="A1"),
+        _e("V1", "A2", "mapped_to_a2l_characteristic", characteristic="A2"),
     ]
     return {"directed": False, "nodes": nodes, "links": edges}
 

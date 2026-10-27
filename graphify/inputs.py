@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from graphify.a2l_links import code_links, link_names, link_range, single_key
 from graphify.focus import READ, WRITE, CALL, slice_graph
 
 CAL_READ = "reads_calibration_field"
@@ -25,15 +26,15 @@ def _loc(e: dict) -> str:
     return f"{sf}:{ln}" if ln else sf
 
 
-def _facts(n: dict, address_taken: bool) -> str:
+def _facts(n: dict, address_taken: bool, rng: str = "") -> str:
     meta = n.get("metadata") if isinstance(n.get("metadata"), dict) else {}
     bits = [n.get("type") or "node"]
     if meta.get("storage"):
         bits.append(str(meta["storage"]))
     if meta.get("defined_in"):
         bits.append(f"defined in {meta['defined_in']}")
-    if meta.get("a2l_range"):
-        bits.append(f"range {meta['a2l_range']}")
+    if rng:
+        bits.append(f"range {rng}")
     if meta.get("bit_mask") is not None:
         bits.append(f"mask {meta['bit_mask']}")
     if address_taken:
@@ -65,6 +66,7 @@ def inputs_report(raw: dict, nid: str, depth: int = 1, fanout: int = 30, budget:
     if nid not in nodes:
         return f"Node not found: {nid}"
     typ = {i: n.get("type") for i, n in nodes.items()}
+    links = code_links(nodes, edges)          # A2L facts are read through the links, not copied on the node
     out_e, in_e = defaultdict(list), defaultdict(list)
     for e in edges:
         out_e[e["source"]].append(e)
@@ -101,11 +103,10 @@ def inputs_report(raw: dict, nid: str, depth: int = 1, fanout: int = 30, budget:
     def value_lines(i: str) -> list:
         if values is None:
             return []
-        m = nodes[i].get("metadata") if isinstance(nodes[i].get("metadata"), dict) else {}
-        key = m.get("a2l_characteristic_name") or m.get("a2l_axis_pts_name")
+        key = single_key(links.get(i))
         if key:
             return list(values(key))
-        members = m.get("a2l_members") or []          # struct variable: show the members' values
+        members = link_names(links.get(i), "char")    # struct variable: show the members' values
         out = []
         for k in members[:MAX_STRUCT_VALUES]:
             out.extend(values(k))
@@ -119,7 +120,7 @@ def inputs_report(raw: dict, nid: str, depth: int = 1, fanout: int = 30, budget:
                        key=lambda v: label(v).lower())
         for v in reads:
             taken = any((e.get("metadata") or {}).get("address_taken") for e in in_e[v] + out_e[v])
-            lines.append(f"  {label(v)}  [{_facts(nodes[v], taken)}]")
+            lines.append(f"  {label(v)}  [{_facts(nodes[v], taken, link_range(links.get(v)))}]")
             lines.extend(value_lines(v))
             if fn in stub_for:
                 lines.append(f"      writers collapsed: {stub_for[fn]['label']} - raise --fanout to list them")
@@ -138,7 +139,7 @@ def inputs_report(raw: dict, nid: str, depth: int = 1, fanout: int = 30, budget:
                 lines.append(f"      {NO_WRITER}")
         cals = sorted({e["target"] for e in out_e[fn] if e["relation"] == CAL_READ})
         for c in cals:
-            lines.append(f"  calibration {label(c)}  [{_facts(nodes[c], False)}]")
+            lines.append(f"  calibration {label(c)}  [{_facts(nodes[c], False, link_range(links.get(c)))}]")
             lines.extend(value_lines(c))
         if not reads and not cals:
             lines.append("  (reads no variable or calibration)")

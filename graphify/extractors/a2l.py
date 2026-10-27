@@ -661,14 +661,18 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
                 _edge(char_id, axis_id, _axis_relation_name(cobj.get("char_type", ""), i))
         return char_id
 
-    def _link(node: dict, hits: list, relation: str, name_key: str, members_key: str, via: str = "") -> None:
+    linked_names: dict = {}      # code node id -> {"char": {names}, "axis": {names}}
+
+    def _link(node: dict, hits: list, relation: str, via: str = "") -> None:
         """Link one code node to every A2L entry that has its plain name (indices and mask ignored).
-        The link carries the index text and the mask; the names stay as text on the code node."""
+        The A2L facts stay on the A2L nodes; the code node only gets a count. The link (edge) carries the
+        index text, the mask, `via`/`suffix` and the A2L name as text."""
         meta = node.setdefault("metadata", {})
+        is_char = relation == "mapped_to_a2l_characteristic"
+        names = linked_names.setdefault(node["id"], {"char": set(), "axis": set()})["char" if is_char else "axis"]
         for sym, cname, cobj, idx, mask in hits:
-            target = _char_node(cname, cobj, sym) if relation == "mapped_to_a2l_characteristic" \
-                else _axis_node(cname, cobj)
-            em = {"characteristic" if relation == "mapped_to_a2l_characteristic" else "axis": cname}
+            target = _char_node(cname, cobj, sym) if is_char else _axis_node(cname, cobj)
+            em = {"characteristic" if is_char else "axis": cname}
             if idx:
                 em["index"] = idx
             if mask:
@@ -678,13 +682,8 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
                 if via == "prefix":
                     em["suffix"] = sym.split("#")[0][len(node.get("metadata", {}).get("calibration_path") or ""):]
             _edge(node["id"], target, relation, em)
-        names = sorted(h[1] for h in hits)
-        meta[members_key] = names[:MAX_STRUCT_MEMBERS]
-        meta[members_key.replace("members", "member_count")] = len(names)
-        if len(hits) == 1:
-            meta[name_key] = hits[0][1]
-        for h in hits[:3]:
-            _add_rationale(node, h[2].get("description", ""))
+            names.add(cname)
+        meta["a2l_member_count" if is_char else "a2l_axis_member_count"] = len(names)
 
     char_by_plain = _plain_index(characteristics)
     axis_by_plain = _plain_index(axis_pts)
@@ -709,18 +708,13 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
         hits = char_by_plain.get(plain_key)
         if hits:
             matched_syms.update(h[0] for h in hits)
-            _link(node, hits, "mapped_to_a2l_characteristic", "a2l_characteristic_name", "a2l_members")
-            los = [h[2].get("min_value") for h in hits if h[2].get("min_value") is not None]
-            his = [h[2].get("max_value") for h in hits if h[2].get("max_value") is not None]
-            rng = _fmt_range(min(los), max(his)) if los and his else ""
-            if rng:
-                meta["a2l_range"] = rng
+            _link(node, hits, "mapped_to_a2l_characteristic")
             stats["characteristics"] += 1
             stats["links"] = stats.get("links", 0) + len(hits)
 
         ahits = axis_by_plain.get(plain_key)
         if ahits:
-            _link(node, ahits, "mapped_to_a2l_axis_pts", "a2l_axis_pts_name", "a2l_axis_members")
+            _link(node, ahits, "mapped_to_a2l_axis_pts")
             stats["axis_pts"] += 1
 
 
@@ -745,15 +739,7 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
                 found.append(h)
         if not found:
             continue
-        old_members = list(meta.get("a2l_members") or [])
-        _link(node, found, "mapped_to_a2l_characteristic", "a2l_characteristic_name", "a2l_members", via="union")
-        meta = node["metadata"]
-        merged = sorted(set(old_members) | {h[1] for h in found})
-        meta["a2l_members"] = merged[:MAX_STRUCT_MEMBERS]
-        meta["a2l_member_count"] = len(merged)
-        if len(merged) != 1:
-            meta.pop("a2l_characteristic_name", None)
-        meta["a2l_union_members"] = sorted(set(meta.get("a2l_union_members") or []) | {h[1] for h in found})[:MAX_STRUCT_MEMBERS]
+        _link(node, found, "mapped_to_a2l_characteristic", via="union")
         matched_syms.update(h[0] for h in found)
         stats["union_links"] += len(found)
 
@@ -776,15 +762,7 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
             node = cal_by_path.get(".".join(parts[:k]))
             if node is None:
                 continue
-            old_members = list(node.get("metadata", {}).get("a2l_members") or [])
-            _link(node, rest, "mapped_to_a2l_characteristic", "a2l_characteristic_name", "a2l_members", via="prefix")
-            meta = node["metadata"]
-            merged = sorted(set(old_members) | {h[1] for h in rest})
-            meta["a2l_members"] = merged[:MAX_STRUCT_MEMBERS]
-            meta["a2l_member_count"] = len(merged)
-            if len(merged) != 1:
-                meta.pop("a2l_characteristic_name", None)
-            meta["a2l_prefix_members"] = sorted(set(meta.get("a2l_prefix_members") or []) | {h[1] for h in rest})[:MAX_STRUCT_MEMBERS]
+            _link(node, rest, "mapped_to_a2l_characteristic", via="prefix")
             matched_syms.update(h[0] for h in rest)
             stats["prefix_links"] += len(rest)
             break
@@ -803,8 +781,7 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
     for node in nodes:
         m = node.get("metadata") or {}
         if node.get("type") == "calibration_field" and not (
-                m.get("a2l_characteristic_name") or m.get("a2l_axis_pts_name") or m.get("calibration_ref")
-                or m.get("a2l_members") or m.get("a2l_axis_members")):
+                node.get("id") in linked_names or m.get("calibration_ref")):
             unmatched_code.append(m.get("calibration_path") or node.get("label"))
     stats["unmatched_code"] = unmatched_code[:200]
     stats["unmatched_a2l"] = [name for key, (name, _o) in sym_to_char.items() if key not in matched_syms][:200]

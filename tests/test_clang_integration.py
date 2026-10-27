@@ -85,9 +85,13 @@ def test_registration_args_are_not_reads(toy):
 
 def test_a2l_join_and_searchable_text(toy):
     nodes, edges = _run(toy)
+    from graphify.a2l_links import code_links, link_range
     code = _by_label(nodes, "KkuAppROM.SW_T_Oel")
-    assert "Oil temperature threshold" in (code.get("rationale") or "")
-    assert code["metadata"]["a2l_range"] == "0.0..150.0"
+    a2l = _by_label(nodes, "Kku_SW_T_Oel")
+    assert "Oil temperature threshold" in (a2l.get("rationale") or "")            # the A2L text lives on the A2L node ...
+    assert not (code.get("rationale") or "")                                       # ... and is not copied onto the code node
+    assert not any(k.startswith("a2l_") and k != "a2l_member_count" for k in code["metadata"])
+    assert link_range(code_links(nodes, edges)[code["id"]]) == "0.0..150.0"       # range is read through the link
     assert _edge(nodes, edges, "KkuAppROM.SW_T_Oel", "mapped_to_a2l_characteristic", "Kku_SW_T_Oel")
     assert _by_label(nodes, "Axis_T")["type"] == "a2l_axis"
 
@@ -127,9 +131,10 @@ def test_cli_flags_enable_pass_without_config(toy, monkeypatch):
 
 def test_metadata_lines_and_priority():
     from graphify.relations import metadata_lines, relation_priority
-    lines = metadata_lines({"type": "calibration_field", "metadata": {"a2l_range": "0..1", "bit_mask": 2}})
+    links = [{"name": "Gain", "kind": "char", "index": "", "mask": None, "via": "", "min": 0, "max": 1}]
+    lines = metadata_lines({"type": "calibration_field", "metadata": {"bit_mask": 2}}, links=links)
     assert any("calibration_field" in line for line in lines)
-    assert any("0..1" in line for line in lines)
+    assert any("0..1" in line for line in lines) and any("Gain" in line for line in lines)
     assert relation_priority("writes_var") < relation_priority("reads_var") < relation_priority("calls")
 
 
@@ -629,3 +634,20 @@ def test_doxygen_comment_is_stored_raw_on_functions_variables_and_calibration_me
     assert by["Rom.Feh.Thr"]["doxygen"] == "/** Schwelle in ms */"         # leaf of an expanded struct
     assert by["Rom.Feh.Trail"]["doxygen"] == "///< trailing doc"
     assert "doxygen" not in by["Rom.Feh.Plain"]
+
+
+def test_explain_shows_a2l_facts_through_the_links_not_from_the_node(toy, tmp_path, monkeypatch, capsys):
+    import graphify.__main__ as mainmod
+    nodes, edges = _run(toy)
+    code = _by_label(nodes, "KkuAppROM.SW_T_Oel")
+    assert not any(k in code["metadata"] for k in ("a2l_range", "a2l_characteristic_name", "a2l_members"))
+    g = tmp_path / "graph.json"
+    g.write_text(json.dumps({"directed": False, "multigraph": False, "graph": {}, "nodes": nodes, "links": edges}))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "explain", "KkuAppROM.SW_T_Oel", "--graph", str(g)])
+    try:
+        mainmod.main()
+    except SystemExit:
+        pass
+    out = capsys.readouterr().out
+    assert "A2L characteristic: Kku_SW_T_Oel" in out and "Range:" in out and "0.0..150.0" in out

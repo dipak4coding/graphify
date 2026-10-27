@@ -1897,7 +1897,8 @@ def dispatch_command(cmd: str) -> None:
         )
         print(f"  Type:      {d.get('file_type', '')}")
         from graphify.relations import address_taken_line, edge_flags, metadata_lines, relation_priority
-        for _ml in metadata_lines(d):
+        from graphify.a2l_links import graph_links
+        for _ml in metadata_lines(d, links=graph_links(G, nid)):
             print(_ml)
         _addr = address_taken_line(G, nid)
         if _addr:
