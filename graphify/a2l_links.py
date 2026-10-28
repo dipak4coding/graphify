@@ -12,7 +12,7 @@ LINK_RELATIONS = {"mapped_to_a2l_characteristic": "char", "mapped_to_a2l_axis_pt
 
 
 def code_links(nodes, edges) -> dict:
-    """code node id -> list of links ``{name, kind, index, mask, via, min, max}`` (kind = char | axis).
+    """code node id -> list of links ``{name, kind, index, mask, via, min, max, char_type, id}`` (kind = char | axis).
 
     ``nodes``: iterable of node dicts, or a dict id -> node dict. ``edges``: iterable of edge dicts
     (``source``/``target``/``relation``/``metadata``)."""
@@ -30,7 +30,8 @@ def code_links(nodes, edges) -> dict:
             continue
         out.setdefault(e.get("source"), []).append({
             "name": name, "kind": kind, "index": em.get("index", ""), "mask": em.get("mask"),
-            "via": em.get("via", ""), "min": tm.get("min"), "max": tm.get("max")})
+            "via": em.get("via", ""), "min": tm.get("min"), "max": tm.get("max"),
+            "char_type": tm.get("char_type", ""), "id": e.get("target")})
     return out
 
 

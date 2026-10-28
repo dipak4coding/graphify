@@ -180,3 +180,12 @@ For GitHub Copilot in VS Code, the installer only sets up the CLI route (`vscode
 - A missing summary means the function has no readable header comment (plain `//` comments are not read by default). Do not invent one.
 - The comment text is the author's, possibly outdated and mostly German. Quote it as such, and check the code for anything important.
 - **[ADDED]** `metadata.doxygen` holds the raw doxygen comment of a function, variable or calibration member (as written, delimiters included); the key is absent if there is none. It is not printed by `explain` yet: read the node in `graph.json`, or ask for the node's metadata.
+
+---
+
+## 11. [ADDED] Documentation vault (`graphify swdoc`)
+
+- `graphify swdoc "<module path>" --dataset SET` writes an Obsidian vault with one note per function, variable, calibration and axis of the module. A function note lists inputs (variables with writers, calibrations with A2L facts and values, callers) and outputs (variables with readers, callees) with [[links]].
+- If a vault exists, point the user to the relevant note (`functions/<Name>.md`) instead of repeating its content.
+- Do not edit generated notes; the author's text goes under "My notes". Do not run `swdoc` on the whole repository without being asked.
+

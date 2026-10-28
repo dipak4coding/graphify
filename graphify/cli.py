@@ -1142,6 +1142,9 @@ def dispatch_command(cmd: str) -> None:
     if cmd == "focus":
         from graphify.focus import run_focus
         sys.exit(run_focus(sys.argv[2:]))
+    if cmd == "swdoc" or (cmd == "export" and len(sys.argv) > 2 and sys.argv[2] == "swdoc"):
+        from graphify.swdoc import run_swdoc
+        sys.exit(run_swdoc(sys.argv[3:] if cmd == "export" else sys.argv[2:]))
     if cmd in ("extract", "update", "clang-check"):
         _consume_clang_flags()
     if cmd == "provider":

@@ -319,3 +319,37 @@ Written to `graphify-out/` (`;`-separated, opens in Excel) together with `param_
 | Where it is shown | `explain F` (Summary, Param doc, Return doc); `explain F --inputs` (summary of F, and one line under each writer) |
 
 | Raw doxygen text **[ADDED]** | `metadata.doxygen` on function, variable and calibration nodes: the doxygen comment exactly as written (`/** */`, `///`, `///<`, ...). Missing comment = no key. Plain `//` and `/* */` are not doxygen and stay missing. For a calibration node it is the comment of the struct member (also for the members of an expanded struct). |
+
+---
+
+## 18. [ADDED] Software documentation vault: `graphify swdoc` (first draft)
+
+```powershell
+python -m graphify swdoc ku/kku --dataset SetA --mermaid
+```
+
+| Option | Meaning |
+|---|---|
+| `"<path substring>"` | The module: functions defined in files whose path contains the text |
+| `--exclude P` | Leave out paths containing P |
+| `--dataset SET`, `--db PATH` | Print the parameter values of that dataset in the notes |
+| `--mermaid` | Add a flow diagram to each function note |
+| `--module NAME` | Name of the module note (default: the path text) |
+| `--graph PATH`, `--out DIR` | Input graph; output folder (default `graphify-out/swdoc`) |
+| `--prune` | Remove notes of this module that were not generated again |
+
+Open the output folder as a vault in Obsidian and start at `_HOME`.
+
+| Folder | Notes |
+|---|---|
+| `functions/` | The module's functions: waterfall of inputs (variables and their writers, calibrations with A2L facts and values, callers), the function, outputs (variables and their readers, callees) |
+| `variables/` | Storage, defined in, doxygen, writers, readers |
+| `calibrations/` | A2L entries (index, mask, type, limits, axes), values per dataset, readers, struct members |
+| `axes/` | A2L axis points, values, which calibrations use them |
+| `border/` | Functions outside the module that are connected (also header prototypes) |
+| `modules/`, `_HOME.md` | Module overview and the entry list |
+
+- **Your own text:** write under "My notes" at the end of a note. It is kept when you export again.
+- **Foreign files:** a file in the vault that graphify did not create is never overwritten.
+- **Different from `export obsidian`:** that command (one flat note per node, grouped by community) is unchanged.
+

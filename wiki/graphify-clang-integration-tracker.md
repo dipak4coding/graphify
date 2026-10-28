@@ -486,3 +486,17 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Consumers changed | `explain` (A2L characteristic / axis / Range lines), `get_node`, NODE `range=` in `query`, `explain --inputs` (range, values lookup), coverage report, `join_a2l` statistics |
 | Side effects | the 200-name cap on the node is gone (it caused the 200-mapped bug); the A2L description is found by searching the A2L node, no longer on the code node |
 | Re-extraction | needed; a graph from before still has the old fields, and `explain` then shows no A2L lines for those nodes |
+
+## 45. `graphify swdoc`: software documentation as an Obsidian vault (first draft, 2026-10-28)
+
+| Item | Detail |
+|---|---|
+| Command | `graphify swdoc "<path substring>" [--exclude P] [--module NAME] [--graph PATH] [--out DIR] [--dataset SET] [--db PATH] [--mermaid] [--prune]`; also `graphify export swdoc ...`. The old `export obsidian` / `export wiki` are unchanged. |
+| Code | `graphify/swdoc.py` (pure functions over the node-link dict; `run_swdoc` = command line). Uses `a2l_links` (A2L facts through links), `inputs._loc`, `focus._norm`, `params.describe` (values), `comments.parse_function_comment` (summary for neighbours), `export._obsidian_safe_stem`, `paths.write_text_atomic`. |
+| Scope | One module = functions that have a definition in files whose path contains the text; plus every variable they read/write, every calibration they read, the axes of those, and border notes for connected functions outside the module (header prototypes included). ROM pointers and ROM structs are plumbing and get no note. |
+| Folders | `functions/`, `variables/`, `calibrations/`, `axes/`, `border/`, `modules/`, `_HOME.md` |
+| Function note | frontmatter; doxygen text as written; parameters; waterfall: inputs (variables with writers + producer summaries, hop-2 callout, calibrations with A2L name, index/mask, type, range, dataset value, link kind, callers), this function (counts), outputs (variables with readers, callees); optional Mermaid diagram; documentation placeholders; source facts; My notes |
+| Calibration note | member doxygen, struct parent/members, A2L entry table (index, mask, type, min/max, link, axes), values block from the dataset, readers (index, mask, confidence) |
+| Names | note name = label without `()`; a clash gets the file or the type as suffix; no `[[a|b]]` aliases (they break tables) |
+| Safety | manifest `.graphify_swdoc_manifest.json` (file -> module); a file graphify did not create is never overwritten; the text under `<!-- graphify:user-block` is kept on re-export; `--prune` removes only this module's notes that were not generated again |
+| Not yet | A2L-less variable measurement table, module diagrams, canvas, doxygen for macros/types, generated summaries, link to the original `export obsidian` conventions (tags are kept: `graphify/<type>`, `module/<name>`) |
