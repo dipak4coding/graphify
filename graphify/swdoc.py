@@ -198,6 +198,106 @@ def _footer(c: _Ctx, i, extra: list) -> list:
             + ["## My notes", "", USER_BLOCK])
 
 
+
+# ---- uniform "signal" rows on the function page: name, description, range, value / enum table, unit
+
+def _enum_text(vt, limit: int = 8) -> str:
+    if not isinstance(vt, dict) or not vt:
+        return ""
+    items = [f"{k}={_esc(v)}" for k, v in vt.items()]
+    return "; ".join(items[:limit]) + (f"; +{len(items) - limit} more" if len(items) > limit else "")
+
+
+def _fmt_range(lo, hi) -> str:
+    return f"{lo} … {hi}" if lo is not None and hi is not None and lo not in ("", None) else ""
+
+
+def _short(text: str, n: int = 160) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _desc_of(c: _Ctx, i, a2l_id=None) -> str:
+    """Code comment first sentence, else the A2L description."""
+    M = c.M
+    d = M.doc_summary(i)
+    if not d:
+        for nid in (a2l_id, i):
+            if nid in M.nodes and M.nodes[nid].get("rationale"):
+                d = str(M.nodes[nid]["rationale"]).split(" | ")[0]
+                break
+    return _short(d)
+
+
+def _value_text(c: _Ctx, a2l_name: str, unit: str) -> str:
+    if not (c.lookup and a2l_name):
+        return ""
+    lines = c.lookup(a2l_name)
+    if not lines:
+        return ""
+    if len(lines) != 1:
+        return None                                      # table: caller points to the note
+    m = re.search(r"\]\s*=\s*(.*)$", lines[0].strip())
+    val = m.group(1) if m else lines[0].strip()
+    if val.startswith("value: not in"):
+        return ""
+    return val[: -len(unit) - 1] if unit and val.endswith(" " + unit) else val
+
+
+def _signal_row(c: _Ctx, i, name_cell: str | None = None) -> list:
+    """[Name, Description, Range, Value / enum table, Unit] for a variable or calibration node."""
+    M = c.M
+    m = M.meta(i)
+    links = [l for l in M.links.get(i, []) if l["kind"] in ("char", "axis")]
+    ref = m.get("calibration_ref") if isinstance(m.get("calibration_ref"), dict) else {}
+    a2l_id = links[0].get("id") if links else None
+    am = M.meta(a2l_id) if a2l_id in M.nodes else {}
+    unit = am.get("unit") or (ref.get("compu_method") or {}).get("unit") or ""
+    enum = _enum_text(am.get("verbal_table") or ref.get("verbal_table"))
+    if links:
+        rng = link_range(links) or _fmt_range(am.get("min"), am.get("max"))
+        rng = rng.replace("..", " … ")
+    else:
+        rng = _fmt_range(ref.get("min"), ref.get("max"))
+    val = ""
+    if len(links) == 1:
+        v = _value_text(c, links[0]["name"], unit)
+        val = f"see {c.link(i)}" if v is None else v
+    elif len(links) > 1:
+        val = f"{len(links)} entries - see {c.link(i)}"
+    cell = [x for x in (f"**{val}**" if val else "", f"`{enum}`" if enum else "") if x]
+    name = name_cell or c.link(i)
+    if links and i in M.nodes and M.t(i) == "calibration_field":
+        names = link_names(links) or [l["name"] for l in links]
+        name += "<br>`" + names[0] + "`" + (f" +{len(names) - 1}" if len(names) > 1 else "")
+    return [_raw(name), _esc(_desc_of(c, i, a2l_id)), rng, _raw("<br>".join(cell)), unit]
+
+
+SIGNAL_HEAD = ["Name", "Description", "Range", "Value / enum table", "Unit"]
+
+
+def _map_inputs(c: _Ctx, cals: list) -> list:
+    """Rows [map/curve, axis, role, input, description, range, unit] for each map or curve read by the function."""
+    M = c.M
+    rows = []
+    for k in cals:
+        for role, ax_rel in (("X", "x_axis"), ("Y", "y_axis"), ("Z", "z_axis")):
+            inp = [e["target"] for e in M.out[k] if e.get("relation") == "input_" + role.lower()]
+            ax = [e["target"] for e in M.out[k] if e.get("relation") == ax_rel]
+            if not inp and not ax:
+                continue
+            axis_cell = ", ".join(c.link(a) for a in ax) or "-"
+            a2l_ax = next((l for a in ax for l in M.links.get(a, []) if l["kind"] == "axis"), None)
+            if not inp:                                    # A2L knows the input quantity, the code did not show it
+                iq = M.meta(a2l_ax["id"]).get("input_quantity") if a2l_ax and a2l_ax.get("id") in M.nodes else ""
+                rows.append([_raw(c.link(k)), role, _raw(axis_cell), _raw(f"`{iq}` *(A2L input quantity)*" if iq else "*not found*"), "", "", ""])
+                continue
+            for v in inp:
+                r = _signal_row(c, v)
+                rows.append([_raw(c.link(k)), role, _raw(axis_cell), r[0], r[1], r[2], r[4]])
+    return rows
+
+
 def function_note(c: _Ctx, f: str) -> str:
     M = c.M
     m = M.meta(f)
@@ -226,35 +326,13 @@ def function_note(c: _Ctx, f: str) -> str:
     # ---- inputs
     out += ["### 1 · Inputs", ""]
     if reads:
-        rows, producers = [], []
-        for v in reads:
-            ws = [w for w in M.sources(v, WRITE, ("function",)) if w != f]
-            wcell = "<br>".join(f"{c.link(w)} {c.at(M.edge(w, v, WRITE) or {})}".strip() for w in ws[:6])
-            if len(ws) > 6:
-                wcell += f"<br>+{len(ws) - 6} more"
-            if f in M.sources(v, WRITE, ("function",)):
-                wcell = (wcell + "<br>" if wcell else "") + "*also written by this function (read-modify-write)*"
-            if not ws and f not in M.sources(v, WRITE, ("function",)):
-                wcell = "*no writer found (pointer write, inactive #ifdef, outside the compile DB, or external input)*"
-            scell = "<br>".join(_esc(M.doc_summary(w)) or "-" for w in ws[:6])
-            vm = M.meta(v)
-            stor = vm.get("storage", "")
-            if vm.get("defined_in"):
-                stor += f", `{vm['defined_in']}`"
-            rows.append([_raw(c.link(v)), stor, _raw(wcell), _raw(scell)])
-            producers += [w for w in ws if w not in producers]
-        out += ["#### Variables read", ""] + _table(["Variable", "Storage", "Written by (hop 1)", "Producer summary"], rows[:MAX_ROWS])
-        hop2 = []
-        for w in producers[:6]:
-            ins = c.vars_of(w, READ) + M.targets(w, {CAL_READ}, ("calibration_field",))
-            if ins:
-                hop2.append(f"> - {c.link(w)} reads {c.many(ins, 8)}")
-        if hop2:
-            out += ["> [!info] Hop 2 - inputs of the producers"] + hop2 + [""]
+        out += ["#### Variables read", ""] + _table(SIGNAL_HEAD, [_signal_row(c, v) for v in reads[:MAX_ROWS]])
     if cals:
-        out += ["#### Calibrations read", ""] + _table(
-            ["Calibration (code)", "A2L characteristic", "Index · mask", "Type", "Range", "Value" + (f" ({c.dataset})" if c.dataset else ""), "Link"],
-            [_cal_row(c, f, k) for k in cals[:MAX_ROWS]])
+        out += ["#### Calibrations read", ""] + _table(SIGNAL_HEAD, [_signal_row(c, k) for k in cals[:MAX_ROWS]])
+        mi = _map_inputs(c, cals)
+        if mi:
+            out += ["#### Inputs of the maps and curves", ""] + _table(
+                ["Map / curve", "Axis", "Axis calibration", "Input variable", "Description", "Range", "Unit"], mi[:MAX_ROWS])
     if callers:
         out += ["#### Callers", "", c.many(callers, 12), ""]
     if not reads and not cals and not callers:
@@ -268,16 +346,7 @@ def function_note(c: _Ctx, f: str) -> str:
     # ---- outputs
     out += ["### 3 · Outputs", ""]
     if writes:
-        rows = []
-        for v in writes:
-            rs = [r for r in M.sources(v, READ, ("function",)) if r != f]
-            rcell = "<br>".join(f"{c.link(r)} {c.at(M.edge(r, v, READ) or {})}".strip() for r in rs[:6])
-            if len(rs) > 6:
-                rcell += f"<br>+{len(rs) - 6} more"
-            if not rs:
-                rcell = "*this function only*"
-            rows.append([_raw(c.link(v)), _raw(rcell), _raw("<br>".join(_esc(M.doc_summary(r)) or "-" for r in rs[:6]))])
-        out += ["#### Variables written", ""] + _table(["Variable", "Read by (hop 1)", "Reader summary"], rows[:MAX_ROWS])
+        out += ["#### Variables written", ""] + _table(SIGNAL_HEAD, [_signal_row(c, v) for v in writes[:MAX_ROWS]])
     if callees:
         out += ["#### Calls", "", c.many(callees, 20), ""]
     if not writes and not callees:

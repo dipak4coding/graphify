@@ -621,6 +621,18 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
             e["metadata"] = metadata
         edges.append(e)
 
+    def _unit_enum(cm_name: str) -> dict:
+        """Unit and verbal table (value -> text) of a COMPU_METHOD, for the node metadata."""
+        cm = compu_methods.get(cm_name or "") or {}
+        out: dict = {}
+        if cm.get("unit"):
+            out["unit"] = cm["unit"]
+        if cm.get("type") == "TAB_VERB" and cm.get("compu_vtab"):
+            content = (compu_vtabs.get(cm["compu_vtab"]) or {}).get("content")
+            if content:
+                out["verbal_table"] = dict(list(content.items())[:64])
+        return out
+
     def _axis_node(axis_name: str, axp: Optional[dict]) -> str:
         axis_id = make_id("a2laxis", axis_name)
         if axis_id not in by_id:
@@ -634,6 +646,8 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
                     "min": axp.get("min_value"), "max": axp.get("max_value"),
                     "max_axis_points": axp.get("max_axis_points"),
                     "internal_symbol": axp.get("internal_symbol", ""),
+                    "input_quantity": axp.get("input_quantity", ""),
+                    **_unit_enum(axp.get("compu_method", "")),
                 })
                 _add_rationale(node, axp.get("description", ""))
             nodes.append(node)
@@ -651,6 +665,7 @@ def join_a2l(nodes: list, edges: list, a2l: dict, a2l_source_file: str) -> dict:
                     "char_type": cobj.get("char_type", ""),
                     "min": cobj.get("min_value"), "max": cobj.get("max_value"),
                     "internal_symbol": ckey,
+                    **_unit_enum(cobj.get("compu_method", "")),
                 },
             }
             _add_rationale(cnode, cobj.get("description", ""))

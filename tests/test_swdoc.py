@@ -72,10 +72,12 @@ def test_scope_and_note_types():
 
 def test_function_note_waterfall_content():
     note = swdoc.build_vault(_graph(), ["kku/"], lookup=_lookup, dataset="SetA")["notes"]["functions/Kku_Calc.md"]
-    assert "[[Vwh_Oel]] `kku/kku.c:L88`" in note and "Berechnet die Oeltemperatur." in note       # writer + its summary
-    assert "[[Kue_Stelle]] `kku/kku.c:L130`" in note                                              # reader of the output
-    assert "| [[KkuAppROM.SW_T_Oel]] | `Kku_SW_T_Oel` | - | VALUE | 0.0..150.0 | Kku_SW_T_Oel [FLOAT] = 95 degC | exact |" in note
-    assert "2 entries, e.g. `Flag_a`, `Flag_b`" in note and "[i] · 0x2" in note                     # many A2L entries, index and mask
+    fn = note.split("### 2 · This function")[0]
+    assert "| Name | Description | Range | Value / enum table | Unit |" in fn                             # uniform signal tables
+    assert "| [[Kku_T_Oel]] |" in fn and "| [[Kku_Anf]] |" in note
+    assert "| [[KkuAppROM.SW_T_Oel]]<br>`Kku_SW_T_Oel` | Schwelle | 0.0 … 150.0 | **95 degC** |" in fn   # name+A2L name, description, range, value
+    assert "Written by" not in note and "Producer summary" not in note                            # old columns are gone
+    assert "[[KkuAppROM.Flags]]<br>`Flag_a` +1" in fn and "2 entries - see [[KkuAppROM.Flags]]" in fn
     assert "KkuAppPtr" not in note.split("## Software documentation")[0]                          # plumbing hidden
     assert "Berechnet die Kuehlanforderung." in note and "`Arg_Modus`" in note
     assert "[[Bios_Write]]" in note and "#### Callers" in note and "[[Kue_Stelle]]" in note
@@ -188,7 +190,7 @@ def test_toy_project_end_to_end(tmp_path):
         for target in re.findall(r"\[\[([^\]|]+)", text):
             assert target in stems, f"{path}: dangling link [[{target}]]"
     f = notes["functions/Kku_BerKuehlAnf.md"]
-    assert "`Kku_SW_T_Oel` | - | VALUE | 0.0..150.0 | Kku_SW_T_Oel [FLOAT] = 95" in f
+    assert "`Kku_SW_T_Oel`" in f and "0.0 … 150.0" in f and "**95" in f
     assert "border/Ipo_2D_S8.md" in notes and "variables/KkuAppPtr.md" not in notes
 
 
@@ -198,3 +200,27 @@ def test_mojibake_in_stored_doxygen_is_repaired_on_export():
     g["nodes"][0]["metadata"]["doxygen"] = bad
     note = swdoc.build_vault(g, ["kku/"], lookup=_lookup, dataset="SetA")["notes"]["functions/Kku_Calc.md"]
     assert "Prüfen für Zustände" in note and "Ã" not in note
+
+
+def test_function_page_shows_unit_enum_and_map_inputs():
+    g = _graph()
+    g["nodes"] += [
+        _n("Cv", "KkuAppROM.Kf", "calibration_field", calibration_path="KkuAppROM.Kf", accessed_via="KkuAppPtr"),
+        _n("Ax", "KkuAppROM.Kf_x", "calibration_field", calibration_path="KkuAppROM.Kf_x", accessed_via="KkuAppPtr"),
+        _n("Ac", "Kf", "a2l_characteristic", sf="x.a2l", char_type="CURVE", min=0, max=100, unit="%"),
+        _n("Aa", "Kf_x", "a2l_axis", sf="x.a2l", min=-40, max=150, unit="degC", input_quantity="Kku_T_Oel"),
+        _n("Mode", "Kku_Mode", "variable", storage="global", defined_in="kku/kku.c",
+           calibration_ref={"a2l_name": "Kku_Mode", "min": 0, "max": 2, "compu_method": {"type": "TAB_VERB", "unit": ""},
+                            "verbal_table": {"0": "Aus", "1": "Ein", "2": "Fehler"}}),
+    ]
+    g["links"] += [
+        _e("F", "Cv", "reads_calibration_field"), _e("F", "Mode", "reads_var"),
+        _e("Cv", "Ax", "x_axis"), _e("Cv", "Vin", "input_x"),
+        _e("Cv", "Ac", "mapped_to_a2l_characteristic", characteristic="Kf"),
+        _e("Ax", "Aa", "mapped_to_a2l_axis_pts", axis="Kf_x"),
+    ]
+    note = swdoc.build_vault(g, ["kku/"], lookup=_lookup, dataset="SetA")["notes"]["functions/Kku_Calc.md"]
+    assert "| [[Kku_Mode]] |  | 0 … 2 | `0=Aus; 1=Ein; 2=Fehler` |  |" in note                  # enum table, no unit
+    assert "| [[KkuAppROM.Kf]]<br>`Kf` |" in note and "| 0 … 100 |" in note and "| % |" in note       # curve with unit
+    assert "#### Inputs of the maps and curves" in note
+    assert "| [[KkuAppROM.Kf]] | X | `KkuAppROM.Kf_x` | [[Kku_T_Oel]] |" in note              # axis + input variable

@@ -511,3 +511,15 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Fix 2 | `comments.fix_mojibake`: repairs only runs that decode back to valid UTF-8; applied in `_doxygen_of` and at `swdoc` export (old graphs fixed without re-extraction) |
 | Note | Repaired text can differ slightly from "as written" in the source file |
 | Tests | clang: Latin-1 source, double-encoded source; swdoc export; unit test of `fix_mojibake` |
+
+## 47. swdoc function page: uniform signal tables + map/curve inputs
+
+| Item | Detail |
+|---|---|
+| Tables | Variables read, Variables written, Calibrations read all use: Name, Description, Range, Value / enum table, Unit |
+| Removed | Storage, Written by, Producer summary, Read by, Reader summary, Index/mask, Type, Link columns and the hop-2 callout (still on variable / calibration pages) |
+| Description | first sentence of the code comment, else the A2L description |
+| Value / enum | dataset value (scalar) or "see note" for tables; enum from the A2L verbal table (`0=Aus; 1=Ein`) |
+| Calibration name | code name + A2L characteristic (`+N` if several entries) |
+| New section | "Inputs of the maps and curves": map/curve, axis (X/Y/Z), axis calibration, input variable with description/range/unit; falls back to the A2L input quantity |
+| A2L extractor | characteristic / axis nodes now carry `unit`, `verbal_table`; axis nodes carry `input_quantity` (needs re-run of the A2L join) |
