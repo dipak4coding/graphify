@@ -500,3 +500,14 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Names | note name = label without `()`; a clash gets the file or the type as suffix; no `[[a|b]]` aliases (they break tables) |
 | Safety | manifest `.graphify_swdoc_manifest.json` (file -> module); a file graphify did not create is never overwritten; the text under `<!-- graphify:user-block` is kept on re-export; `--prune` removes only this module's notes that were not generated again |
 | Not yet | A2L-less variable measurement table, module diagrams, canvas, doxygen for macros/types, generated summaries, link to the original `export obsidian` conventions (tags are kept: `graphify/<type>`, `module/<name>`) |
+
+## 46. Encoding of comments (`fÃ¼r` fix)
+
+| Item | Detail |
+|---|---|
+| Cause 1 | libclang binding decodes strict UTF-8; a Latin-1/cp1252 source raised `UnicodeDecodeError` and the comment was silently lost |
+| Fix 1 | `_make_decoding_lenient` in `clang_c.py`: UTF-8, fallback cp1252 |
+| Cause 2 | Text already double-encoded (UTF-8 read as cp1252) gives `fÃ¼r` |
+| Fix 2 | `comments.fix_mojibake`: repairs only runs that decode back to valid UTF-8; applied in `_doxygen_of` and at `swdoc` export (old graphs fixed without re-extraction) |
+| Note | Repaired text can differ slightly from "as written" in the source file |
+| Tests | clang: Latin-1 source, double-encoded source; swdoc export; unit test of `fix_mojibake` |

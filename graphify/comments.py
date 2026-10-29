@@ -136,3 +136,31 @@ def _params(block: list) -> dict:
             continue
         out[name] = (out[name] + " " + txt).strip()
     return {k: v[:300] for k, v in out.items()}
+
+
+# ---------------------------------------------------------------------------
+# text repair
+# ---------------------------------------------------------------------------
+
+# UTF-8 bytes that were decoded as cp1252/latin-1 ("fÃ¼r" instead of "für", "Â°C" instead of "°C"):
+# a lead character Â..ô followed by 1-3 continuation characters as cp1252 shows them.
+_CONT = "\u0080-\u00bf\u0152\u0153\u0160\u0161\u0178\u017d\u017e\u0192\u02c6\u02dc\u2013\u2014\u2018-\u201e\u2020-\u2022\u2026\u2030\u2039\u203a\u20ac\u2122"
+_MOJIBAKE = re.compile(f"[\u00c2-\u00f4][{_CONT}]{{1,3}}")
+
+
+def _undo(m: "re.Match") -> str:
+    run = m.group(0)
+    for enc in ("cp1252", "latin-1"):
+        try:
+            return run.encode(enc).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+    return run
+
+
+def fix_mojibake(text):
+    """Repair UTF-8 text that was decoded as cp1252 (``fÃ¼r`` -> ``für``). Only runs that decode back to valid
+    UTF-8 are changed, so correct text, including a real ``ü``, is left alone."""
+    if not text or not isinstance(text, str) or text.isascii():
+        return text
+    return _MOJIBAKE.sub(_undo, text)

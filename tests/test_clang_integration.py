@@ -651,3 +651,20 @@ def test_explain_shows_a2l_facts_through_the_links_not_from_the_node(toy, tmp_pa
         pass
     out = capsys.readouterr().out
     assert "A2L characteristic: Kku_SW_T_Oel" in out and "Range:" in out and "0.0..150.0" in out
+
+
+def test_latin1_source_comment_is_decoded_not_lost(tmp_path):
+    (tmp_path / "t.c").write_bytes("/** Prüfen für Zustände */\nint Chk(void) { return 0; }\n".encode("latin-1"))
+    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    nodes, _ = _run(tmp_path)
+    fn = [n for n in nodes if n.get("label") == "Chk()"][0]
+    assert fn["metadata"]["doxygen"] == "/** Prüfen für Zustände */"
+
+
+def test_double_encoded_source_comment_is_repaired(tmp_path):
+    good = "/** Prüfen für °C */\nint Chk(void) { return 0; }\n"
+    (tmp_path / "t.c").write_bytes(good.encode("utf-8").decode("cp1252").encode("utf-8"))   # mojibake stored in the file
+    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    nodes, _ = _run(tmp_path)
+    fn = [n for n in nodes if n.get("label") == "Chk()"][0]
+    assert fn["metadata"]["doxygen"] == "/** Prüfen für °C */"

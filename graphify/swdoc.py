@@ -129,14 +129,18 @@ class _Model:
     def edge(self, src, tgt, rels):
         return next((e for e in self.out[src] if e["target"] == tgt and e.get("relation") in rels), None)
 
+    def doxygen(self, i) -> str:
+        from graphify.comments import fix_mojibake
+        return fix_mojibake(str(self.meta(i).get("doxygen") or ""))
+
     def doc_summary(self, i) -> str:
         """One line describing the node: parsed summary if present, else the first sentence of its doxygen text."""
+        from graphify.comments import fix_mojibake, parse_function_comment
         m = self.meta(i)
         if m.get("summary"):
-            return str(m["summary"])
-        if m.get("doxygen"):
-            from graphify.comments import parse_function_comment
-            return parse_function_comment(m["doxygen"], self.label(i)).get("summary", "")
+            return fix_mojibake(str(m["summary"]))
+        if self.doxygen(i):
+            return parse_function_comment(self.doxygen(i), self.label(i)).get("summary", "")
         return ""
 
 
@@ -173,9 +177,9 @@ def _doc_section(c: _Ctx, i: int) -> list:
     M = c.M
     m = M.meta(i)
     out = ["## Description", ""]
-    if m.get("doxygen"):
+    if M.doxygen(i):
         out += ["> [!quote] Code comment (doxygen, as written)"] + [f"> {ln}" if ln else ">" for ln in
-                ["```"] + str(m["doxygen"]).splitlines() + ["```"]] + [""]
+                ["```"] + M.doxygen(i).splitlines() + ["```"]] + [""]
     else:
         out += ["*No doxygen comment in the code.*", ""]
     if m.get("summary") and not m.get("doxygen"):

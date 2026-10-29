@@ -190,3 +190,11 @@ def test_toy_project_end_to_end(tmp_path):
     f = notes["functions/Kku_BerKuehlAnf.md"]
     assert "`Kku_SW_T_Oel` | - | VALUE | 0.0..150.0 | Kku_SW_T_Oel [FLOAT] = 95" in f
     assert "border/Ipo_2D_S8.md" in notes and "variables/KkuAppPtr.md" not in notes
+
+
+def test_mojibake_in_stored_doxygen_is_repaired_on_export():
+    g = _graph()
+    bad = "/** PrÃ¼fen fÃ¼r ZustÃ¤nde. */"
+    g["nodes"][0]["metadata"]["doxygen"] = bad
+    note = swdoc.build_vault(g, ["kku/"], lookup=_lookup, dataset="SetA")["notes"]["functions/Kku_Calc.md"]
+    assert "Prüfen für Zustände" in note and "Ã" not in note

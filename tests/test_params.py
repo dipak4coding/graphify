@@ -412,3 +412,9 @@ def test_union_alias_links_only_the_a2l_entry_with_the_same_mask():
     edges2: list = []
     join_a2l([node2], edges2, a2l, "x.a2l")
     assert link_names(code_links([node2], edges2)["h"]) == ["g06", "g07"]
+
+
+def test_fix_mojibake_repairs_only_broken_runs():
+    from graphify.comments import fix_mojibake as f
+    assert f("fÃ¼r Â°C GrÃ¶ÃŸe") == "für °C Größe"
+    assert f("echtes ü und ä") == "echtes ü und ä" and f("plain") == "plain" and f("Ã") == "Ã" and f(None) is None

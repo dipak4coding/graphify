@@ -206,6 +206,31 @@ def _warn_once(key: str, msg: str) -> None:
         print(f"[graphify] {msg}", file=sys.stderr)
 
 
+def _make_decoding_lenient(cindex) -> None:
+    """libclang hands out text as raw bytes and the Python binding decodes it as strict UTF-8, so one byte of a
+    Latin-1/cp1252 source (`ü` = 0xFC) raises UnicodeDecodeError and the symbol or comment is lost. Decode as
+    UTF-8 and fall back to cp1252 instead. Applied once; harmless if the binding differs."""
+    import ctypes
+    cls = getattr(cindex, "c_interop_string", None)
+    if cls is None or getattr(cls, "_graphify_lenient", False):
+        return
+
+    def value(self):
+        raw = super(ctypes.c_char_p, self).value
+        if raw is None:
+            return None
+        try:
+            return raw.decode("utf8")
+        except UnicodeDecodeError:
+            return raw.decode("cp1252", errors="replace")
+
+    try:
+        cls.value = property(value)
+        cls._graphify_lenient = True
+    except Exception:  # pragma: no cover - different binding layout
+        pass
+
+
 def _load_cindex(cfg: ClangConfig):
     try:
         import clang.cindex as cindex
@@ -219,6 +244,7 @@ def _load_cindex(cfg: ClangConfig):
             cindex.Config.set_library_file(lib)
         except Exception:  # already initialised - the first setting wins
             pass
+    _make_decoding_lenient(cindex)
     try:
         cindex.Index.create()
     except Exception as exc:
@@ -775,6 +801,8 @@ class ClangExtractor:
             return {}
         if not raw:
             return {}
+        from graphify.comments import fix_mojibake
+        raw = fix_mojibake(raw)                  # text that was double-encoded in the source file
         if len(raw) > _MAX_DOXYGEN:
             return {"doxygen": raw[:_MAX_DOXYGEN], "doxygen_truncated": True}
         return {"doxygen": raw}
