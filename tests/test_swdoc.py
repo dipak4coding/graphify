@@ -226,16 +226,20 @@ def test_function_page_shows_unit_enum_and_map_inputs():
     assert "| [[KkuAppROM.Kf]] | X | `KkuAppROM.Kf_x` | [[Kku_T_Oel]] |" in note              # axis + input variable
 
 
-def test_module_note_lists_component_signals_not_a_diagram():
+def test_module_note_call_flow_signal_tables_and_calibrations():
     g = _graph()
     g["nodes"] += [_n("G", "Kku_Hilf()", "function", loc="L50", has_definition=True),
                    _n("Loc", "Kku_Zwischen", "variable", storage="static", defined_in="kku/kku.c")]
-    g["links"] += [_e("F", "Loc", "writes_var"), _e("G", "Loc", "reads_var")]
+    g["links"] += [_e("F", "Loc", "writes_var"), _e("G", "Loc", "reads_var"), _e("F", "G", "calls")]
     note = swdoc.build_vault(g, ["kku/"], lookup=_lookup, dataset="SetA")["notes"]["modules/kku.md"]
-    assert "mermaid" not in note and "Signal matrix" not in note
-    assert "## Component signals" in note and "1 inputs" in note
+    assert "## Call flow" in note and "flowchart LR" in note
+    flow = note.split("```mermaid")[1].split("```")[0]
+    assert '["Kku_Calc"]' in flow and '["Kku_Hilf"]' in flow and flow.count("-->") == 3   # caller group -> F, F -> G, F -> callee group (header prototype)
+    assert "Signal matrix" not in note and "Local signals" not in note
+    for gone in ("Inputs from other modules", "Variables read outside this module", "connected", "## Interface"):
+        assert gone not in note
     assert "### Component inputs" in note and "| [[Kku_T_Oel]] |" in note and "[[Vwh_Oel]]" in note
     assert "### Component outputs" in note and "[[Kue_Stelle]]" in note
-    assert "### Local signals" in note and "[[Kku_Zwischen]]" in note
-    sig = swdoc.component_signals(swdoc._Model(g), ["F", "G"], ["Vin", "Vout", "Loc"])
-    assert set(sig["inputs"]) == {"Vin"} and set(sig["outputs"]) == {"Vout"} and sig["local"] == ["Loc"]
+    cal = note.split("## Calibrations")[1].split("## ")[0]
+    assert "| Name | Description | Range | Value / enum table | Unit | Read by |" in cal
+    assert "| [[KkuAppROM.SW_T_Oel]]<br>`Kku_SW_T_Oel` | Schwelle | 0.0 … 150.0 | **95 degC** |" in cal

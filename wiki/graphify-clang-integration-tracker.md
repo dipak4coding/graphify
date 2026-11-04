@@ -524,13 +524,13 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | New section | "Inputs of the maps and curves": map/curve, axis (X/Y/Z), axis calibration, input variable with description/range/unit; falls back to the A2L input quantity |
 | A2L extractor | characteristic / axis nodes now carry `unit`, `verbal_table`; axis nodes carry `input_quantity` (needs re-run of the A2L join) |
 
-## 48. swdoc component signals (module note)
+## 48. swdoc module note: call flow, component signals, calibrations
 
 | Item | Detail |
 |---|---|
 | Component | the exported module (e.g. `ku/kku`) |
-| Component input | variable read inside, written outside (or written nowhere = external input) |
-| Component output | variable written inside, read outside |
-| Local signal | everything else touched inside |
-| Module note | section "Component signals": Component inputs / outputs tables (Name, Description, Range, Value / enum, Unit, outside partner) and the Local signals list |
-| Dropped | a Mermaid component diagram and a signal matrix (function read/write) were built and removed: unreadable / not wanted |
+| Call flow | Mermaid `flowchart LR`: one block per function (grouped by source file), arrow = calls; callers / callees outside the module collapsed to one box per outside component (folder). Max 80 arrows, 15 outside boxes per side |
+| Component input / output | variable read inside and written outside / written inside and read outside (or written nowhere = external input). Tables: Name, Description, Range, Value / enum, Unit, outside partner |
+| Calibrations | table with the same attributes (Name + A2L name, Description, Range, Value / enum, Unit) and the reading functions |
+| Removed from the module page | Local signals, Inputs from other modules (variables), Variables read outside this module, Functions outside the module that are connected, the Interface heading |
+| Dropped earlier | signal diagram with ports and the signal matrix (unreadable / not wanted) |

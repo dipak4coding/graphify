@@ -585,6 +585,65 @@ def component_signals(M: _Model, funcs: list, vars_: list) -> dict:
     return {"inputs": inputs, "outputs": outputs, "local": local}
 
 
+MAX_FLOW_EDGES = 80      # call arrows drawn in the call flow
+MAX_FLOW_GROUPS = 15    # outside components drawn in the call flow
+
+
+def _mm(text: str, n: int = 40) -> str:
+    return re.sub(r"[\"\[\]{}()<>|#;`]", "", str(text))[:n]
+
+
+def call_flow(c: _Ctx, funcs: list) -> list:
+    """Mermaid call graph: which function of the module calls which one. Callers and callees outside the module
+    are collapsed into one box per outside component (folder of the source file)."""
+    M = c.M
+    fset = set(funcs)
+    ids: dict = {}
+
+    def nid(x, pre="n") -> str:
+        return ids.setdefault((pre, x), f"{pre}{len(ids)}")
+
+    inner = [(f, x) for f in funcs for x in M.targets(f, CALL, ("function",)) if x in fset and x != f]
+    callers: dict = defaultdict(set)          # outside group -> module functions it calls
+    callees: dict = defaultdict(set)          # outside group -> module functions calling into it
+    for f in funcs:
+        for x in M.sources(f, CALL, ("function",)):
+            if x not in fset:
+                callers[_group_of(M, x)].add(f)
+        for x in M.targets(f, CALL, ("function",)):
+            if x not in fset:
+                callees[_group_of(M, x)].add(f)
+    gl = sorted(callers, key=lambda g: (-len(callers[g]), g))[:MAX_FLOW_GROUPS]
+    gr = sorted(callees, key=lambda g: (-len(callees[g]), g))[:MAX_FLOW_GROUPS]
+    byfile = defaultdict(list)
+    for f in funcs:
+        byfile[M.file(f) or "?"].append(f)
+
+    L = ["```mermaid", "flowchart LR"]
+    for g in gl:
+        L.append(f'  {nid(g, "gl")}(["{_mm(g)}"])')
+    for fl in sorted(byfile):
+        clustered = len(byfile) > 1
+        if clustered:
+            L.append(f'  subgraph {nid(fl, "sf")}["{_mm(fl, 60)}"]')
+        for f in byfile[fl]:
+            L.append(f'  {nid(f, "f")}["{_mm(re.sub(r"[(][)]$", "", M.label(f)))}"]')
+        if clustered:
+            L.append("  end")
+    for g in gr:
+        L.append(f'  {nid(g, "gr")}(["{_mm(g)}"])')
+    edges = []
+    for g in gl:
+        edges += [f'  {nid(g, "gl")} --> {nid(f, "f")}' for f in sorted(callers[g], key=lambda x: M.label(x).lower())]
+    edges += [f'  {nid(f, "f")} --> {nid(x, "f")}' for f, x in sorted(set(inner), key=lambda e: (M.label(e[0]).lower(), M.label(e[1]).lower()))]
+    for g in gr:
+        edges += [f'  {nid(f, "f")} --> {nid(g, "gr")}' for f in sorted(callees[g], key=lambda x: M.label(x).lower())]
+    L += edges[:MAX_FLOW_EDGES] + ["```"]
+    if len(edges) > MAX_FLOW_EDGES:
+        L += ["", f"> [!note] {len(edges) - MAX_FLOW_EDGES} more call arrows are not drawn; the function tables list the calls of each function."]
+    return L
+
+
 def _partner(c: _Ctx, fs: list, external: bool = False, limit: int = 4) -> str:
     if external:
         return "*external input (no writer in the code)*"
@@ -596,8 +655,10 @@ def module_note(c: _Ctx, funcs: list, vars_: list, cals: list, border: list, ins
     out = _fm({"type": "module", "tags": ["graphify/module", f"module/{_slug(c.module)}"], "generated": True})
     out += [f"# {c.module}", "", f"[[_HOME]] · {len(funcs)} functions · {len(vars_)} variables · {len(cals)} calibrations", ""]
     sig = component_signals(M, funcs, vars_)
-    nin, nout, nloc = len(sig["inputs"]), len(sig["outputs"]), len(sig["local"])
-    out += ["## Component signals", "", f"{nin} inputs (from other components) · {nout} outputs (read by other components) · {nloc} local", ""]
+    nin, nout = len(sig["inputs"]), len(sig["outputs"])
+    out += ["## Call flow", "", "Arrow = calls. Boxes with rounded ends are other components (callers on the left, callees on the right).", ""]
+    out += call_flow(c, funcs) + [""]
+    out += ["## Component signals", "", f"{nin} inputs (from other components) · {nout} outputs (read by other components)", ""]
     if sig["inputs"]:
         out += ["### Component inputs", ""] + _table(SIGNAL_HEAD + ["Written outside by"],
             [_signal_row(c, v) + [_raw(_partner(c, sig["inputs"][v]["outside"], sig["inputs"][v]["external"]))]
@@ -606,8 +667,13 @@ def module_note(c: _Ctx, funcs: list, vars_: list, cals: list, border: list, ins
         out += ["### Component outputs", ""] + _table(SIGNAL_HEAD + ["Read outside by"],
             [_signal_row(c, v) + [_raw(_partner(c, sig["outputs"][v]["outside"]))]
              for v in sorted(sig["outputs"], key=lambda x: M.label(x).lower())[:MAX_ROWS]])
-    if sig["local"]:
-        out += ["### Local signals", "", c.many(sorted(sig["local"], key=lambda x: M.label(x).lower()), 120), ""]
+    if cals:
+        out += ["## Calibrations", "", f"{len(cals)} calibrations read by the functions of this component.", ""] + _table(
+            SIGNAL_HEAD + ["Read by"],
+            [_signal_row(c, k) + [_raw(c.many(M.sources(k, {CAL_READ}, ("function",)), 4))]
+             for k in sorted(cals, key=lambda x: M.label(x).lower())[:MAX_ROWS]])
+        if len(cals) > MAX_ROWS:
+            out += [f"*+{len(cals) - MAX_ROWS} more calibrations - see the calibration notes*", ""]
     byfile = defaultdict(list)
     for f in funcs:
         byfile[M.file(f)].append(f)
@@ -617,17 +683,6 @@ def module_note(c: _Ctx, funcs: list, vars_: list, cals: list, border: list, ins
             [[_raw(c.link(f)), M.doc_summary(f), len(M.targets(f, CALL, ("function",))),
               len(c.vars_of(f, READ)) + len(M.targets(f, {CAL_READ}, ("calibration_field",))),
               len(c.vars_of(f, WRITE))] for f in byfile[fl]])
-    ins = [v for v in vars_ if v not in inside_vars]
-    outs = [v for v in vars_ if v in inside_vars and any(r not in funcs for r in M.sources(v, READ, ("function",)))]
-    out += ["## Interface", ""]
-    if ins:
-        out += ["### Inputs from other modules (variables)", "", c.many(sorted(ins, key=lambda x: M.label(x).lower()), 80), ""]
-    if outs:
-        out += ["### Variables read outside this module", "", c.many(sorted(outs, key=lambda x: M.label(x).lower()), 80), ""]
-    if cals:
-        out += ["### Calibrations", "", c.many(sorted(cals, key=lambda x: M.label(x).lower()), 120), ""]
-    if border:
-        out += ["### Functions outside the module that are connected", "", c.many(sorted(border, key=lambda x: M.label(x).lower()), 80), ""]
     return "\n".join(out + ["## My notes", "", USER_BLOCK])
 
 
