@@ -529,7 +529,7 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Item | Detail |
 |---|---|
 | Component | the exported module (e.g. `ku/kku`) |
-| Call flow | Mermaid `flowchart LR`: one block per function (grouped by source file), arrow = calls; callers / callees outside the module collapsed to one box per outside component (folder). Max 80 arrows, 15 outside boxes per side |
+| Call flow | Mermaid `flowchart LR`: one block per function (text = exact note name, class `internal-link` so Obsidian opens the note; not verified in Obsidian itself) (grouped by source file), arrow = calls; callers / callees outside the module collapsed to one box per outside component (folder). Max 80 arrows, 15 outside boxes per side |
 | Component input / output | variable read inside and written outside / written inside and read outside (or written nowhere = external input). Tables: Name, Description, Range, Value / enum, Unit, outside partner |
 | Calibrations | table with the same attributes (Name + A2L name, Description, Range, Value / enum, Unit) and the reading functions |
 | Removed from the module page | Local signals, Inputs from other modules (variables), Variables read outside this module, Functions outside the module that are connected, the Interface heading |

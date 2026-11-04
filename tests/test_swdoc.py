@@ -235,6 +235,9 @@ def test_module_note_call_flow_signal_tables_and_calibrations():
     assert "## Call flow" in note and "flowchart LR" in note
     flow = note.split("```mermaid")[1].split("```")[0]
     assert '["Kku_Calc"]' in flow and '["Kku_Hilf"]' in flow and flow.count("-->") == 3   # caller group -> F, F -> G, F -> callee group (header prototype)
+    assert "  class f1,f2 internal-link;" in flow or "internal-link;" in flow             # blocks resolve to their notes
+    for stem in ("Kku_Calc", "Kku_Hilf"):
+        assert f'["{stem}"]' in flow
     assert "Signal matrix" not in note and "Local signals" not in note
     for gone in ("Inputs from other modules", "Variables read outside this module", "connected", "## Interface"):
         assert gone not in note

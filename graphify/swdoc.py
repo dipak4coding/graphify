@@ -627,7 +627,7 @@ def call_flow(c: _Ctx, funcs: list) -> list:
         if clustered:
             L.append(f'  subgraph {nid(fl, "sf")}["{_mm(fl, 60)}"]')
         for f in byfile[fl]:
-            L.append(f'  {nid(f, "f")}["{_mm(re.sub(r"[(][)]$", "", M.label(f)))}"]')
+            L.append(f'  {nid(f, "f")}["{c.stems[f].replace(chr(34), "")}"]')
         if clustered:
             L.append("  end")
     for g in gr:
@@ -638,7 +638,9 @@ def call_flow(c: _Ctx, funcs: list) -> list:
     edges += [f'  {nid(f, "f")} --> {nid(x, "f")}' for f, x in sorted(set(inner), key=lambda e: (M.label(e[0]).lower(), M.label(e[1]).lower()))]
     for g in gr:
         edges += [f'  {nid(f, "f")} --> {nid(g, "gr")}' for f in sorted(callees[g], key=lambda x: M.label(x).lower())]
-    L += edges[:MAX_FLOW_EDGES] + ["```"]
+    L += edges[:MAX_FLOW_EDGES]
+    L.append("  class " + ",".join(nid(f, "f") for f in funcs) + " internal-link;")   # Obsidian: block text = note name
+    L.append("```")
     if len(edges) > MAX_FLOW_EDGES:
         L += ["", f"> [!note] {len(edges) - MAX_FLOW_EDGES} more call arrows are not drawn; the function tables list the calls of each function."]
     return L
@@ -656,7 +658,7 @@ def module_note(c: _Ctx, funcs: list, vars_: list, cals: list, border: list, ins
     out += [f"# {c.module}", "", f"[[_HOME]] · {len(funcs)} functions · {len(vars_)} variables · {len(cals)} calibrations", ""]
     sig = component_signals(M, funcs, vars_)
     nin, nout = len(sig["inputs"]), len(sig["outputs"])
-    out += ["## Call flow", "", "Arrow = calls. Boxes with rounded ends are other components (callers on the left, callees on the right).", ""]
+    out += ["## Call flow", "", "Arrow = calls. A function block opens its note (click it in reading view). Boxes with rounded ends are other components (callers on the left, callees on the right).", ""]
     out += call_flow(c, funcs) + [""]
     out += ["## Component signals", "", f"{nin} inputs (from other components) · {nout} outputs (read by other components)", ""]
     if sig["inputs"]:
