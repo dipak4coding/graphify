@@ -224,3 +224,20 @@ def test_function_page_shows_unit_enum_and_map_inputs():
     assert "| [[KkuAppROM.Kf]]<br>`Kf` |" in note and "| 0 … 100 |" in note and "| % |" in note       # curve with unit
     assert "#### Inputs of the maps and curves" in note
     assert "| [[KkuAppROM.Kf]] | X | `KkuAppROM.Kf_x` | [[Kku_T_Oel]] |" in note              # axis + input variable
+
+
+def test_module_note_has_component_diagram_with_ports_local_signals_and_tables():
+    g = _graph()
+    g["nodes"] += [_n("G", "Kku_Hilf()", "function", loc="L50", has_definition=True),
+                   _n("Loc", "Kku_Zwischen", "variable", storage="static", defined_in="kku/kku.c")]
+    g["links"] += [_e("F", "Loc", "writes_var"), _e("G", "Loc", "reads_var"), _e("F", "G", "calls")]
+    note = swdoc.build_vault(g, ["kku/"], lookup=_lookup, dataset="SetA")["notes"]["modules/kku.md"]
+    assert "## Component diagram" in note and "flowchart LR" in note
+    assert '[/"Kku_T_Oel"/]' in note and '[\\"Kku_Anf"\\]' in note                     # input port left, output port right
+    assert '-."Kku_Zwischen".->' in note and "-->|call|" in note                        # local signal dashed, call solid
+    assert 'kku declared only' in note                                                  # header prototype is not a component
+    assert "### Component inputs" in note and "| [[Kku_T_Oel]] |" in note and "[[Vwh_Oel]]" in note
+    assert "### Component outputs" in note and "[[Kue_Stelle]]" in note
+    assert "### Local signals" in note and "[[Kku_Zwischen]]" in note
+    sig = swdoc.component_signals(swdoc._Model(g), [i for i in ("F", "G")], ["Vin", "Vout", "Loc"])
+    assert set(sig["inputs"]) == {"Vin"} and set(sig["outputs"]) == {"Vout"} and sig["local"] == ["Loc"]

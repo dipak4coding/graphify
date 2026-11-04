@@ -523,3 +523,16 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Calibration name | code name + A2L characteristic (`+N` if several entries) |
 | New section | "Inputs of the maps and curves": map/curve, axis (X/Y/Z), axis calibration, input variable with description/range/unit; falls back to the A2L input quantity |
 | A2L extractor | characteristic / axis nodes now carry `unit`, `verbal_table`; axis nodes carry `input_quantity` (needs re-run of the A2L join) |
+
+## 48. swdoc component diagram (module note)
+
+| Item | Detail |
+|---|---|
+| Component | the exported module (e.g. `ku/kku`); its functions are the blocks |
+| Component input | variable read inside, written outside (or written nowhere = external input) |
+| Component output | variable written inside, read outside |
+| Local signal | everything else touched inside |
+| Diagram | Mermaid `flowchart LR` in `modules/<module>.md`: input ports left (`[/ /]`), function blocks in the component box, output ports right (`[\ \]`), outside components grouped by source folder; dashed arrow = local signal (variable name), solid = call; calls across the boundary dotted |
+| Tables | Component inputs / outputs (Name, Description, Range, Value / enum, Unit, outside partner) and Local signals |
+| Limits | 40 ports and 20 outside groups per side; the tables list all |
+| Header prototypes | outside group is shown as "<folder> (declared only)" |

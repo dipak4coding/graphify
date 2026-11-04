@@ -538,10 +538,191 @@ def border_note(c: _Ctx, i: str) -> str:
     return "\n".join(out + ["## My notes", "", USER_BLOCK])
 
 
+
+# ---------------------------------------------------------------------------
+# component view: functions of the module, local signals, component signals
+# ---------------------------------------------------------------------------
+
+MAX_PORTS = 40          # input / output ports drawn per side
+MAX_GROUPS = 20         # outside components drawn per side
+MAX_EDGE_NAMES = 3      # signal names printed on one function-to-function edge
+
+
+def _group_of(M: _Model, i) -> str:
+    """Outside 'component' of a function: the folder of its source file (a file without folder: its name)."""
+    f = M.file(i)
+    if not f:
+        return "?"
+    parent = str(Path(f.replace("\\", "/")).parent)
+    g = parent if parent not in ("", ".") else Path(f).stem
+    m = M.meta(i)
+    if m.get("declaration_only") and not m.get("has_definition"):
+        g += " (declared only)"                      # prototype in a header: the definition is elsewhere
+    return g
+
+
+def component_signals(M: _Model, funcs: list, vars_: list) -> dict:
+    """Split the variables touched by the module's functions.
+
+    input  : read inside and written outside (or written nowhere: external input)
+    output : written inside and read outside
+    local  : everything else that is touched inside
+    """
+    fset = set(funcs)
+    inputs, outputs, local = {}, {}, []
+    for v in vars_:
+        ws, rs = M.sources(v, WRITE, ("function",)), M.sources(v, READ, ("function",))
+        wi, ri = [w for w in ws if w in fset], [r for r in rs if r in fset]
+        wo, ro = [w for w in ws if w not in fset], [r for r in rs if r not in fset]
+        if not wi and not ri:
+            continue
+        hit = False
+        if ri and (wo or not wi):
+            inputs[v] = {"inside": ri, "outside": wo, "external": not ws}
+            hit = True
+        if wi and ro:
+            outputs[v] = {"inside": wi, "outside": ro}
+            hit = True
+        if not hit:
+            local.append(v)
+    return {"inputs": inputs, "outputs": outputs, "local": local}
+
+
+def _mm(text: str, n: int = 40) -> str:
+    return re.sub(r"[\"\[\]{}()<>|#;`]", "", str(text))[:n]
+
+
+def _names_label(M: _Model, vs: list) -> str:
+    names = [_mm(M.label(v), 28) for v in vs]
+    return ", ".join(names[:MAX_EDGE_NAMES]) + (f" +{len(names) - MAX_EDGE_NAMES}" if len(names) > MAX_EDGE_NAMES else "")
+
+
+def component_diagram(c: _Ctx, funcs: list, sig: dict) -> list:
+    """Simulink-like Mermaid picture: input ports on the left, the function blocks in the component box, output ports on the right."""
+    M = c.M
+    fset = set(funcs)
+    ids: dict = {}
+
+    def nid(x, pre="n") -> str:
+        return ids.setdefault((pre, x), f"{pre}{len(ids)}")
+
+    L = ["```mermaid", "flowchart LR"]
+    ins = sorted(sig["inputs"], key=lambda v: M.label(v).lower())
+    outs = sorted(sig["outputs"], key=lambda v: M.label(v).lower())
+
+    # ---- outside producers / consumers, grouped by their component
+    prod: dict = defaultdict(list)          # group -> signals it feeds in
+    cons: dict = defaultdict(list)          # group -> signals it reads
+    for v in ins[:MAX_PORTS]:
+        for g in sorted({_group_of(M, w) for w in sig["inputs"][v]["outside"]}) or ["external / unknown"]:
+            prod[g].append(v)
+    for v in outs[:MAX_PORTS]:
+        for g in sorted({_group_of(M, r) for r in sig["outputs"][v]["outside"]}):
+            cons[g].append(v)
+    callers: dict = defaultdict(set)        # outside group -> module functions it calls
+    callees: dict = defaultdict(set)        # module function -> outside groups it calls
+    for f in funcs:
+        for x in M.sources(f, CALL, ("function",)):
+            if x not in fset:
+                callers[_group_of(M, x)].add(f)
+        for x in M.targets(f, CALL, ("function",)):
+            if x not in fset:
+                callees[f].add(_group_of(M, x))
+
+    def groups(side: dict, extra: set) -> list:
+        allg = sorted(set(side) | extra, key=lambda g: (-len(side.get(g, [])), g))
+        return allg[:MAX_GROUPS]
+
+    left = groups(prod, set(callers))
+    right = groups(cons, {g for gs in callees.values() for g in gs})
+    L.append('  subgraph LEFT["Outside: feeds the component"]')
+    for g in left:
+        L.append(f'    {nid(g, "gl")}(["{_mm(g)}"])')
+    L.append("  end")
+    L.append(f'  subgraph COMP["{_mm(c.module)} (component)"]')
+    for v in ins[:MAX_PORTS]:
+        L.append(f'    {nid(v, "i")}[/"{_mm(M.label(v))}"/]')
+    for f in funcs:
+        L.append(f'    {nid(f, "f")}["{_mm(re.sub(r"[(][)]$", "", M.label(f)))}"]')
+    for v in outs[:MAX_PORTS]:
+        L.append(f'    {nid(v, "o")}[\\"{_mm(M.label(v))}"\\]')
+    L.append("  end")
+    L.append('  subgraph RIGHT["Outside: reads the component"]')
+    for g in right:
+        L.append(f'    {nid(g, "gr")}(["{_mm(g)}"])')
+    L.append("  end")
+
+    # ---- component signals in
+    for g in left:
+        for v in prod.get(g, []):
+            L.append(f'  {nid(g, "gl")} --> {nid(v, "i")}')
+    for v in ins[:MAX_PORTS]:
+        for r in sig["inputs"][v]["inside"]:
+            L.append(f'  {nid(v, "i")} --> {nid(r, "f")}')
+    # ---- component signals out
+    for v in outs[:MAX_PORTS]:
+        for w in sig["outputs"][v]["inside"]:
+            L.append(f'  {nid(w, "f")} --> {nid(v, "o")}')
+        for g in sorted({_group_of(M, r) for r in sig["outputs"][v]["outside"]}):
+            if g in right:
+                L.append(f'  {nid(v, "o")} --> {nid(g, "gr")}')
+    # ---- local signals (dashed, per writer/reader pair) and calls (solid) inside
+    pair: dict = defaultdict(list)
+    for v in sig["local"] + [v for v in sig["inputs"] if v in sig["outputs"]] + [v for v in sig["outputs"]]:
+        ws = [w for w in M.sources(v, WRITE, ("function",)) if w in fset]
+        rs = [r for r in M.sources(v, READ, ("function",)) if r in fset]
+        for w in ws:
+            for r in rs:
+                if w != r and v not in pair[(w, r)]:
+                    pair[(w, r)].append(v)
+    for (w, r), vs in sorted(pair.items(), key=lambda kv: (M.label(kv[0][0]).lower(), M.label(kv[0][1]).lower())):
+        L.append(f'  {nid(w, "f")} -."{_names_label(M, vs)}".-> {nid(r, "f")}')
+    for f in funcs:
+        for x in M.targets(f, CALL, ("function",)):
+            if x in fset:
+                L.append(f'  {nid(f, "f")} -->|call| {nid(x, "f")}')
+    # ---- calls across the boundary (thick dotted)
+    for g in left:
+        for f in sorted(callers.get(g, ()), key=lambda x: M.label(x).lower()):
+            L.append(f'  {nid(g, "gl")} -.->|call| {nid(f, "f")}')
+    for f, gs in sorted(callees.items(), key=lambda kv: M.label(kv[0]).lower()):
+        for g in sorted(gs):
+            if g in right:
+                L.append(f'  {nid(f, "f")} -.->|call| {nid(g, "gr")}')
+    L.append("```")
+    return L
+
+
+def _partner(c: _Ctx, fs: list, external: bool = False, limit: int = 4) -> str:
+    if external:
+        return "*external input (no writer in the code)*"
+    return c.many(fs, limit) if fs else "-"
+
+
 def module_note(c: _Ctx, funcs: list, vars_: list, cals: list, border: list, inside_vars: set) -> str:
     M = c.M
     out = _fm({"type": "module", "tags": ["graphify/module", f"module/{_slug(c.module)}"], "generated": True})
     out += [f"# {c.module}", "", f"[[_HOME]] · {len(funcs)} functions · {len(vars_)} variables · {len(cals)} calibrations", ""]
+    sig = component_signals(M, funcs, vars_)
+    out += ["## Component diagram", "",
+            "Solid arrow = call · dashed arrow = local signal (variable name on the line) · "
+            "left ports = component inputs · right ports = component outputs. "
+            "Note names are linked in the tables below.", ""]
+    out += component_diagram(c, funcs, sig) + [""]
+    nin, nout, nloc = len(sig["inputs"]), len(sig["outputs"]), len(sig["local"])
+    out += [f"{nin} component inputs · {nout} component outputs · {nloc} local signals", ""]
+    if nin > MAX_PORTS or nout > MAX_PORTS:
+        out += [f"> [!note] The picture shows the first {MAX_PORTS} ports per side; the tables list all of them.", ""]
+    if sig["inputs"]:
+        out += ["### Component inputs", ""] + _table(SIGNAL_HEAD + ["Written outside by"],
+            [_signal_row(c, v) + [_raw(_partner(c, sig["inputs"][v]["outside"], sig["inputs"][v]["external"]))]
+             for v in sorted(sig["inputs"], key=lambda x: M.label(x).lower())[:MAX_ROWS]])
+    if sig["outputs"]:
+        out += ["### Component outputs", ""] + _table(SIGNAL_HEAD + ["Read outside by"],
+            [_signal_row(c, v) + [_raw(_partner(c, sig["outputs"][v]["outside"]))]
+             for v in sorted(sig["outputs"], key=lambda x: M.label(x).lower())[:MAX_ROWS]])
+    if sig["local"]:
+        out += ["### Local signals", "", c.many(sorted(sig["local"], key=lambda x: M.label(x).lower()), 120), ""]
     byfile = defaultdict(list)
     for f in funcs:
         byfile[M.file(f)].append(f)
