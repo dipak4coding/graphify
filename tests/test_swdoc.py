@@ -233,11 +233,27 @@ def test_module_note_has_component_diagram_with_ports_local_signals_and_tables()
     g["links"] += [_e("F", "Loc", "writes_var"), _e("G", "Loc", "reads_var"), _e("F", "G", "calls")]
     note = swdoc.build_vault(g, ["kku/"], lookup=_lookup, dataset="SetA")["notes"]["modules/kku.md"]
     assert "## Component diagram" in note and "flowchart LR" in note
-    assert '[/"Kku_T_Oel"/]' in note and '[\\"Kku_Anf"\\]' in note                     # input port left, output port right
-    assert '-."Kku_Zwischen".->' in note and "-->|call|" in note                        # local signal dashed, call solid
+    assert "in 1" in note and "out 1" in note and "kku - 1 in / 1 out" in note            # component signals as counts on the blocks
+    assert "-->|1 sig · call|" in note                                                    # one merged arrow per function pair
+    assert "### Signal matrix" in note and "| [[Kku_Zwischen]] | local | W | R |" in note   # matrix: signal x function
+    assert "| [[Kku_T_Oel]] | in ← vwh | R |" in note and "| [[Kku_Anf]] | out → kue | W |" in note
     assert 'kku declared only' in note                                                  # header prototype is not a component
     assert "### Component inputs" in note and "| [[Kku_T_Oel]] |" in note and "[[Vwh_Oel]]" in note
     assert "### Component outputs" in note and "[[Kue_Stelle]]" in note
     assert "### Local signals" in note and "[[Kku_Zwischen]]" in note
     sig = swdoc.component_signals(swdoc._Model(g), [i for i in ("F", "G")], ["Vin", "Vout", "Loc"])
     assert set(sig["inputs"]) == {"Vin"} and set(sig["outputs"]) == {"Vout"} and sig["local"] == ["Loc"]
+
+
+def test_big_module_diagram_stays_small_and_matrix_is_split():
+    g = {"directed": False, "nodes": [], "links": []}
+    for i in range(25):
+        g["nodes"].append(_n(f"F{i}", f"Fn{i}()", "function", has_definition=True))
+        g["nodes"].append(_n(f"V{i}", f"Var{i}", "variable", storage="global"))
+        g["links"].append(_e(f"F{i}", f"V{i}", "writes_var"))
+        g["links"].append(_e(f"F{(i + 1) % 25}", f"V{i}", "reads_var"))
+        g["links"].append(_e(f"F{i}", f"F{(i + 7) % 25}", "calls"))
+    note = swdoc.build_vault(g, ["kku/"])["notes"]["modules/kku.md"]
+    block = note.split("```mermaid")[1].split("```")[0]
+    assert block.count("-->") + block.count("-.->") <= swdoc.MAX_EDGES + 4
+    assert note.count("#### Functions ") == 3                                             # 25 functions / 10 columns
