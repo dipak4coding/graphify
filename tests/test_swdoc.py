@@ -254,3 +254,29 @@ def test_function_diagram_blocks_are_note_links_too():
     assert '["Kku_Calc"]' in block and '("Kku_T_Oel")' in block and '{{"KkuAppROM.SW_T_Oel"}}' in block   # note names as block text
     cls = re.search(r"class ([\w,]+) internal-link;", block)
     assert cls and len(cls.group(1).split(",")) >= 5
+
+
+def test_single_file_merges_everything_with_heading_links(tmp_path, monkeypatch):
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(_graph()), encoding="utf-8")
+    out = tmp_path / "vault"
+    assert swdoc.run_swdoc(["kku/", "--module", "Software", "--graph", str(gp), "--out", str(out), "--single-file",
+                            "--mermaid"]) == 0
+    files = sorted(p.name for p in out.rglob("*") if p.is_file() and not p.name.startswith("."))
+    assert files == ["Software.md", "_HOME.md"]                                      # ONE note file (plus the home page)
+    text = (out / "Software.md").read_text(encoding="utf-8")
+    heads = set(re.findall(r"^#{2,3} (.+)$", text, flags=re.M))
+    assert {"Overview", "Functions", "Variables", "Calibrations", "Kku_Calc", "Kku_T_Oel", "KkuAppROM.SW_T_Oel"} <= heads
+    for target in re.findall(r"\[\[#([^\]|]+)\]\]", text):
+        assert target in heads, f"dangling heading link [[#{target}]]"
+    assert "[[Kku_Calc]]" not in text and "internal-link" not in text and "Software documentation (to be filled" not in text
+    assert text.count("<!-- graphify:user-block") == 1 and text.rstrip().endswith("-->")      # one user block, at the end
+    assert "| Name | Description | Range | Value / enum table | Unit |" in text
+    allheads = re.findall(r"^#{2,6} (.+)$", text, flags=re.M)
+    assert all(allheads.count(h) == 1 for h in ("Functions", "Calibrations", "Overview", "Kku_Calc"))   # unique link targets
+    assert "opens its note" not in text
+
+
+def test_dot_pattern_selects_the_whole_software():
+    r = swdoc.build_vault(_graph(), ["."], lookup=_lookup, dataset="SetA")
+    assert not r["empty"] and r["counts"]["functions"] >= 3

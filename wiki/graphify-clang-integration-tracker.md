@@ -535,3 +535,14 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Calibrations | table with the same attributes (Name + A2L name, Description, Range, Value / enum, Unit) and the reading functions |
 | Removed from the module page | Local signals, Inputs from other modules (variables), Variables read outside this module, Functions outside the module that are connected, the Interface heading |
 | Dropped earlier | signal diagram with ports and the signal matrix (unreadable / not wanted) |
+
+## 49. swdoc `--single-file`: the whole software in one note
+
+| Item | Detail |
+|---|---|
+| Command | `graphify swdoc . --module Software --single-file [--dataset SetA]` (`.` or `*` as path = everything) |
+| Output | `Software.md` (+ `_HOME.md`); sections Overview (module note content), Functions, Variables, Calibrations, Axes, Functions outside the scope, My notes |
+| Links | `[[Name]]` becomes `[[#Name]]` (heading in the same file); every heading is unique |
+| Dropped in this mode | per-note footers (documentation placeholders, source facts, user blocks): one user block at the end; Mermaid `internal-link` class (a block cannot open a heading) |
+| Warning | printed above 5 MB: Obsidian gets slow on one huge file, per-module export is lighter |
+| Caveat | the call flow and the signal / calibration tables of the Overview cover the whole scope at once |
