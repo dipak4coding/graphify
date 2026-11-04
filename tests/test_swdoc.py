@@ -246,3 +246,11 @@ def test_module_note_call_flow_signal_tables_and_calibrations():
     cal = note.split("## Calibrations")[1].split("## ")[0]
     assert "| Name | Description | Range | Value / enum table | Unit | Read by |" in cal
     assert "| [[KkuAppROM.SW_T_Oel]]<br>`Kku_SW_T_Oel` | Schwelle | 0.0 … 150.0 | **95 degC** |" in cal
+
+
+def test_function_diagram_blocks_are_note_links_too():
+    note = swdoc.build_vault(_graph(), ["kku/"], lookup=_lookup, dataset="SetA", mermaid=True)["notes"]["functions/Kku_Calc.md"]
+    block = note.split("```mermaid")[1].split("```")[0]
+    assert '["Kku_Calc"]' in block and '("Kku_T_Oel")' in block and '{{"KkuAppROM.SW_T_Oel"}}' in block   # note names as block text
+    cls = re.search(r"class ([\w,]+) internal-link;", block)
+    assert cls and len(cls.group(1).split(",")) >= 5

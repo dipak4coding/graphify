@@ -400,6 +400,8 @@ def _mermaid(c: _Ctx, f: str, reads, cals, writes) -> list:
         return ids.setdefault(x, f"n{len(ids)}")
 
     def lab(x) -> str:
+        if x in c.stems:                                   # exact note name, so Obsidian's internal-link resolves it
+            return c.stems[x].replace('"', "")
         return re.sub(r"[\"\[\]{}()<>|]", "", re.sub(r"\(\)$", "", M.label(x)))[:48]
 
     lines = ["## Optional diagram", "", "```mermaid", "flowchart TB", f'  {nid(f)}["{lab(f)}"]']
@@ -413,6 +415,9 @@ def _mermaid(c: _Ctx, f: str, reads, cals, writes) -> list:
         lines.append(f'  {nid(f)} --> {nid(v)}("{lab(v)}")')
         for r in [x for x in M.sources(v, READ, ("function",)) if x != f][:3]:
             lines.append(f'  {nid(v)}("{lab(v)}") --> {nid(r)}["{lab(r)}"]')
+    linked = [i for x, i in ids.items() if x in c.stems]
+    if linked:
+        lines.append("  class " + ",".join(linked) + " internal-link;")
     return lines + ["```", ""]
 
 
