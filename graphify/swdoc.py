@@ -543,10 +543,6 @@ def border_note(c: _Ctx, i: str) -> str:
 # component view: functions of the module, local signals, component signals
 # ---------------------------------------------------------------------------
 
-MAX_EDGES = 40          # function-to-function arrows drawn
-MAX_GROUPS = 12         # outside components drawn per side
-MATRIX_COLS = 10        # function columns per matrix table
-MATRIX_ROWS = 150       # signal rows in the matrix before "+N more"
 
 
 def _group_of(M: _Model, i) -> str:
@@ -589,161 +585,6 @@ def component_signals(M: _Model, funcs: list, vars_: list) -> dict:
     return {"inputs": inputs, "outputs": outputs, "local": local}
 
 
-def _mm(text: str, n: int = 40) -> str:
-    return re.sub(r"[\"\[\]{}()<>|#;`]", "", str(text))[:n]
-
-
-def component_diagram(c: _Ctx, funcs: list, sig: dict) -> list:
-    """Slim Mermaid overview: one block per function, ONE arrow per function pair (call and/or signal count),
-    the component inputs / outputs as two collapsed ports, outside components as boxes with counts."""
-    M = c.M
-    fset = set(funcs)
-    ids: dict = {}
-
-    def nid(x, pre="n") -> str:
-        return ids.setdefault((pre, x), f"{pre}{len(ids)}")
-
-    def sigs_of(f, which):           # component signals of one function: which = "inputs" / "outputs"
-        return [v for v, d in sig[which].items() if f in d["inside"]]
-
-    # function -> function: calls and signals (component-internal variables) merged into one arrow
-    pair: dict = defaultdict(lambda: {"call": False, "sig": set()})
-    for f in funcs:
-        for x in M.targets(f, CALL, ("function",)):
-            if x in fset and x != f:
-                pair[(f, x)]["call"] = True
-    internal = list(sig["local"]) + [v for v in sig["inputs"] if v in sig["outputs"]] + list(sig["outputs"])
-    for v in internal:
-        ws = [w for w in M.sources(v, WRITE, ("function",)) if w in fset]
-        rs = [r for r in M.sources(v, READ, ("function",)) if r in fset]
-        for w in ws:
-            for r in rs:
-                if w != r:
-                    pair[(w, r)]["sig"].add(v)
-
-    # outside: component groups with counts
-    prod: dict = defaultdict(set)
-    cons: dict = defaultdict(set)
-    for v, d in sig["inputs"].items():
-        for g in {_group_of(M, w) for w in d["outside"]} or {"external / unknown"}:
-            prod[g].add(v)
-    for v, d in sig["outputs"].items():
-        for g in {_group_of(M, r) for r in d["outside"]}:
-            cons[g].add(v)
-    callers: dict = defaultdict(set)
-    callees: dict = defaultdict(set)
-    for f in funcs:
-        for x in M.sources(f, CALL, ("function",)):
-            if x not in fset:
-                callers[_group_of(M, x)].add(f)
-        for x in M.targets(f, CALL, ("function",)):
-            if x not in fset:
-                callees[f].add(_group_of(M, x))
-
-    def top(side: dict, extra: set) -> list:
-        allg = sorted(set(side) | extra, key=lambda g: (-len(side.get(g, ())), g))
-        return allg[:MAX_GROUPS]
-
-    left = top(prod, set(callers))
-    right = top(cons, {g for gs in callees.values() for g in gs})
-    hidden_l = len(set(prod) | set(callers)) - len(left)
-    hidden_r = len(set(cons) | {g for gs in callees.values() for g in gs}) - len(right)
-    nin, nout = len(sig["inputs"]), len(sig["outputs"])
-    byfile = defaultdict(list)
-    for f in funcs:
-        byfile[M.file(f) or "?"].append(f)
-
-    def fcell(f) -> str:
-        i, o = len(sigs_of(f, "inputs")), len(sigs_of(f, "outputs"))
-        tag = " · ".join(x for x in (f"in {i}" if i else "", f"out {o}" if o else "") if x)
-        return _mm(re.sub(r"[(][)]$", "", M.label(f))) + (f"<br/>{tag}" if tag else "")
-
-    L = ["```mermaid", "flowchart LR"]
-    L.append('  subgraph LEFT["Outside"]')
-    for g in left:
-        L.append(f'    {nid(g, "gl")}(["{_mm(g)}"])')
-    if hidden_l > 0:
-        L.append(f'    gl_more(["+{hidden_l} more"])')
-    L.append("  end")
-    L.append(f'  subgraph COMP["{_mm(c.module)} - {nin} in / {nout} out"]')
-    for fl in sorted(byfile):
-        clustered = len(byfile) > 1
-        if clustered:
-            L.append(f'    subgraph {nid(fl, "sf")}["{_mm(fl, 60)}"]')
-        for f in byfile[fl]:
-            L.append(f'    {nid(f, "f")}["{fcell(f)}"]')
-        if clustered:
-            L.append("    end")
-    L.append("  end")
-    L.append('  subgraph RIGHT["Outside"]')
-    for g in right:
-        L.append(f'    {nid(g, "gr")}(["{_mm(g)}"])')
-    if hidden_r > 0:
-        L.append(f'    gr_more(["+{hidden_r} more"])')
-    L.append("  end")
-
-    def cnt(sg, cl) -> str:
-        return " · ".join(x for x in (f"{sg} sig" if sg else "", f"{cl} call" if cl else "") if x)
-
-    for g in left:
-        L.append(f'  {nid(g, "gl")} -->|{cnt(len(prod.get(g, ())), len(callers.get(g, ())))}| COMP')
-    for g in right:
-        ncall = sum(1 for gs in callees.values() if g in gs)
-        L.append(f'  COMP -->|{cnt(len(cons.get(g, ())), ncall)}| {nid(g, "gr")}')
-    ranked = sorted(pair.items(), key=lambda kv: (not kv[1]["call"], -len(kv[1]["sig"]),
-                                                  M.label(kv[0][0]).lower(), M.label(kv[0][1]).lower()))
-    for (w, r), d in ranked[:MAX_EDGES]:
-        label = cnt(len(d["sig"]), 1 if d["call"] else 0).replace("1 call", "call")
-        L.append(f'  {nid(w, "f")} {"-->" if d["call"] else "-.->"}|{label}| {nid(r, "f")}')
-    L.append("```")
-    if len(ranked) > MAX_EDGES:
-        L += ["", f"> [!note] {len(ranked) - MAX_EDGES} weaker function links are not drawn (calls and the strongest signal links are kept). "
-                  "The signal matrix lists all of them."]
-    return L
-
-
-def signal_matrix(c: _Ctx, funcs: list, sig: dict) -> list:
-    """Signals x functions table: R = reads, W = writes, RW = both. Rows: inputs, outputs, local.
-    Wide modules are cut into column blocks; each block lists only the signals its functions touch."""
-    M = c.M
-    kinds = [("in", sorted(sig["inputs"], key=lambda v: M.label(v).lower())),
-             ("out", sorted(sig["outputs"], key=lambda v: M.label(v).lower())),
-             ("local", sorted(sig["local"], key=lambda v: M.label(v).lower()))]
-    rows = [(k, v) for k, vs in kinds for v in vs]
-    if not rows:
-        return []
-    access: dict = {}
-    for v in {v for _, v in rows}:
-        w = set(M.sources(v, WRITE, ("function",)))
-        r = set(M.sources(v, READ, ("function",)))
-        access[v] = {f: ("RW" if f in w and f in r else "W" if f in w else "R") for f in funcs if f in w or f in r}
-
-    def where(k, v) -> str:
-        if k == "in":
-            d = sig["inputs"][v]
-            gs = sorted({_group_of(M, w) for w in d["outside"]}) or ["external"]
-            return "in ← " + ", ".join(_esc(g) for g in gs[:2]) + (f" +{len(gs) - 2}" if len(gs) > 2 else "")
-        if k == "out":
-            gs = sorted({_group_of(M, r) for r in sig["outputs"][v]["outside"]})
-            return "out → " + ", ".join(_esc(g) for g in gs[:2]) + (f" +{len(gs) - 2}" if len(gs) > 2 else "")
-        return "local"
-
-    out = []
-    blocks = [funcs[i:i + MATRIX_COLS] for i in range(0, len(funcs), MATRIX_COLS)]
-    for n, cols in enumerate(blocks, 1):
-        cs = set(cols)
-        sel = [(k, v) for k, v in rows if any(f in cs for f in access[v])]
-        if not sel:
-            continue
-        if len(blocks) > 1:
-            out += [f"#### Functions {n} of {len(blocks)}", ""]
-        body = [[_raw(c.link(v)), _raw(where(k, v))] + [access[v].get(f, "") for f in cols] for k, v in sel[:MATRIX_ROWS]]
-        out += _table(["Signal", "Kind"] + [_raw(c.link(f)) for f in cols], body)
-        if len(sel) > MATRIX_ROWS:
-            out += [f"*+{len(sel) - MATRIX_ROWS} more signals*", ""]
-    return out
-
-
 def _partner(c: _Ctx, fs: list, external: bool = False, limit: int = 4) -> str:
     if external:
         return "*external input (no writer in the code)*"
@@ -755,16 +596,8 @@ def module_note(c: _Ctx, funcs: list, vars_: list, cals: list, border: list, ins
     out = _fm({"type": "module", "tags": ["graphify/module", f"module/{_slug(c.module)}"], "generated": True})
     out += [f"# {c.module}", "", f"[[_HOME]] · {len(funcs)} functions · {len(vars_)} variables · {len(cals)} calibrations", ""]
     sig = component_signals(M, funcs, vars_)
-    out += ["## Component diagram", "",
-            "Block = function (`in n` / `out n` = its component signals) · solid arrow = call (and signals) · "
-            "dashed arrow = signals only · numbers = count of signals / calls. "
-            "The signal matrix below shows which signal goes where.", ""]
-    out += component_diagram(c, funcs, sig) + [""]
     nin, nout, nloc = len(sig["inputs"]), len(sig["outputs"]), len(sig["local"])
-    out += [f"{nin} component inputs · {nout} component outputs · {nloc} local signals", ""]
-    mx = signal_matrix(c, funcs, sig)
-    if mx:
-        out += ["### Signal matrix", "", "R = reads · W = writes · RW = both. `in ←` / `out →` = the outside component.", ""] + mx
+    out += ["## Component signals", "", f"{nin} inputs (from other components) · {nout} outputs (read by other components) · {nloc} local", ""]
     if sig["inputs"]:
         out += ["### Component inputs", ""] + _table(SIGNAL_HEAD + ["Written outside by"],
             [_signal_row(c, v) + [_raw(_partner(c, sig["inputs"][v]["outside"], sig["inputs"][v]["external"]))]

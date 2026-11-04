@@ -524,15 +524,13 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | New section | "Inputs of the maps and curves": map/curve, axis (X/Y/Z), axis calibration, input variable with description/range/unit; falls back to the A2L input quantity |
 | A2L extractor | characteristic / axis nodes now carry `unit`, `verbal_table`; axis nodes carry `input_quantity` (needs re-run of the A2L join) |
 
-## 48. swdoc component view (module note)
+## 48. swdoc component signals (module note)
 
 | Item | Detail |
 |---|---|
-| Component | the exported module (e.g. `ku/kku`); its functions are the blocks |
+| Component | the exported module (e.g. `ku/kku`) |
 | Component input | variable read inside, written outside (or written nowhere = external input) |
 | Component output | variable written inside, read outside |
 | Local signal | everything else touched inside |
-| Slim diagram (Mermaid) | one block per function (`in n` / `out n` = its component signals), grouped by source file; ONE arrow per function pair (`call` and/or `n sig`); outside components as boxes with one counted arrow to/from the component; max 40 function arrows (calls first, then the strongest signal links), max 12 outside boxes per side |
-| Signal matrix | rows = signals (in / out / local, with the outside component), columns = functions, cell `R` / `W` / `RW`; 10 functions per table, only signals a block touches; max 150 rows |
-| Tables | Component inputs / outputs (Name, Description, Range, Value / enum, Unit, outside partner), Local signals |
-| History | first version drew every signal as a port and a labelled line: unreadable for big modules, replaced by this view |
+| Module note | section "Component signals": Component inputs / outputs tables (Name, Description, Range, Value / enum, Unit, outside partner) and the Local signals list |
+| Dropped | a Mermaid component diagram and a signal matrix (function read/write) were built and removed: unreadable / not wanted |
