@@ -280,3 +280,45 @@ def test_single_file_merges_everything_with_heading_links(tmp_path, monkeypatch)
 def test_dot_pattern_selects_the_whole_software():
     r = swdoc.build_vault(_graph(), ["."], lookup=_lookup, dataset="SetA")
     assert not r["empty"] and r["counts"]["functions"] >= 3
+
+
+def test_html_export_is_one_self_contained_file_with_all_items(tmp_path):
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(_graph()), encoding="utf-8")
+    assert swdoc.run_swdoc([".", "--module", "Software", "--graph", str(gp), "--out", str(tmp_path / "o"), "--html"]) == 0
+    html = (tmp_path / "o" / "Software.html").read_text(encoding="utf-8")
+    assert html.startswith("<!doctype html>") and "src=" not in html and "http://" not in html.replace("http://www.w3.org/2000/svg", "")
+    blob = re.search(r'<script id="data" type="application/json">(.*?)</script>', html, re.S).group(1)
+    data = json.loads(blob.replace("<\\/", "</"))
+    names = {(it["t"], it["n"]) for it in data["it"]}
+    assert {("f", "Kku_Calc"), ("v", "Kku_T_Oel"), ("c", "KkuAppROM.SW_T_Oel"), ("b", "Bios_Write")} <= names
+    calc = next(it for it in data["it"] if it["n"] == "Kku_Calc")
+    assert calc["rd"] and calc["wr"] and calc["ca"] and calc["cl"] is not None and "doc" in calc
+    comps = {c["n"]: c for c in data["comps"]}
+    assert {"kku", "kue", "vwh"} <= set(comps) and comps["kku"]["in"] and comps["kku"]["out"]       # component signals
+
+
+def test_html_pages_render_without_javascript_errors(tmp_path):
+    pw = pytest.importorskip("playwright.sync_api")
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(_graph()), encoding="utf-8")
+    swdoc.run_swdoc([".", "--module", "Software", "--graph", str(gp), "--out", str(tmp_path), "--html"])
+    with pw.sync_playwright() as p:
+        try:
+            b = p.chromium.launch()
+        except Exception:
+            pytest.skip("no browser")
+        page = b.new_page()
+        errs = []
+        page.on("pageerror", lambda e: errs.append(str(e)))
+        url = (tmp_path / "Software.html").as_uri()
+        page.goto(url)
+        n = page.evaluate("IT.length")
+        for i in range(n):
+            page.goto(f"{url}#i/{i}")
+            assert page.inner_text("#main h2"), f"page {i} is empty"
+        for k in range(page.evaluate("C.length")):
+            page.goto(f"{url}#k/{k}")
+            assert page.inner_text("#main h2")
+        b.close()
+    assert not errs, errs

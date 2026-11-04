@@ -546,3 +546,18 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Dropped in this mode | per-note footers (documentation placeholders, source facts, user blocks): one user block at the end; Mermaid `internal-link` class (a block cannot open a heading) |
 | Warning | printed above 5 MB: Obsidian gets slow on one huge file, per-module export is lighter |
 | Caveat | the call flow and the signal / calibration tables of the Overview cover the whole scope at once |
+
+## 50. swdoc `--html`: the whole software as ONE self-contained html file
+
+| Item | Detail |
+|---|---|
+| Command | `graphify swdoc . --module Software --html [--dataset SetA]` -> `Software.html` |
+| Why | one big Obsidian note was too slow; the html embeds the data once as JSON and builds a page only when it is opened |
+| No dependency | plain HTML / CSS / JavaScript, no external library: works offline, can be mailed or put on a share. Keep it local (it contains the code structure), do not publish it |
+| Navigation | sidebar: components, search (name, description, A2L name) with filter Functions / Variables / Calibrations; links between all items |
+| Pages | home (components), component (call flow SVG, component inputs / outputs, calibrations, function table), function (call flow, params, inputs, map / curve inputs, outputs), variable (writers / readers), calibration (A2L entries, values, readers, struct parent), axis, outside function |
+| Tables | same columns everywhere: Name, Description, Range, Value / enum table, Unit |
+| Call flow | own layered SVG layout (clickable blocks); more than 140 blocks are not drawn, the function table lists the calls |
+| Component | folder of the source file |
+| Warning | printed above 40 MB |
+| Tests | data structure test + a headless browser test that opens every page (skipped without playwright) |

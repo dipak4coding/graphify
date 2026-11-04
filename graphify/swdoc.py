@@ -698,7 +698,7 @@ def module_note(c: _Ctx, funcs: list, vars_: list, cals: list, border: list, ins
 # ---------------------------------------------------------------------------
 
 def build_vault(raw: dict, patterns: list, exclude: list | None = None, lookup=None, dataset: str = "",
-                mermaid: bool = False, module: str | None = None) -> dict:
+                mermaid: bool = False, module: str | None = None, want_notes: bool = True) -> dict:
     """-> {"notes": {relative path: text}, "module": name, "counts": {...}, "empty": bool}."""
     M = _Model(raw)
     pats = ["" if p.strip() in (".", "*", "/") else _norm(p) for p in patterns]      # "." / "*" = the whole software
@@ -769,6 +769,11 @@ def build_vault(raw: dict, patterns: list, exclude: list | None = None, lookup=N
                 c.children[M.meta(k)["from_struct_type"]].append(k)
     for lst in c.children.values():
         lst.sort(key=lambda x: M.label(x).lower())
+    if not want_notes:           # the HTML export needs the scope and the context, not the markdown
+        return {"notes": {}, "module": mod_stem, "empty": False, "ctx": c, "funcs": funcs, "vars": sorted(vars_),
+                "cals": sorted(cals), "axes": sorted(axes), "border": sorted(border), "plumbing": plumbing,
+                "counts": {"functions": len(funcs), "variables": len(vars_), "calibrations": len(cals),
+                           "axes": len(axes), "border": len(border)}}
     notes = {}
     for f in funcs:
         notes[f"functions/{stems[f]}.md"] = function_note(c, f)
@@ -940,9 +945,10 @@ class _Vault:
 
 def run_swdoc(argv: list) -> int:
     usage = ('Usage: graphify swdoc "<path substring>" [--exclude P] [--module NAME] [--graph PATH] [--out DIR]\n'
-             '         [--dataset SET] [--db PATH] [--mermaid] [--prune] [--single-file]\n'
+             '         [--dataset SET] [--db PATH] [--mermaid] [--prune] [--single-file] [--html]\n'
              '  e.g. graphify swdoc ku/kku --dataset SetA --mermaid\n'
-             '       graphify swdoc . --module Software --single-file --dataset SetA   (whole software in ONE file)\n'
+             '       graphify swdoc . --module Software --single-file --dataset SetA   (whole software in ONE markdown file)\n'
+             '       graphify swdoc . --module Software --html --dataset SetA          (whole software as ONE html file)\n'
              '  Writes an Obsidian vault (open the folder as a vault): functions/, variables/, calibrations/, axes/,\n'
              '  border/, modules/, _HOME.md. Text under "My notes" is kept on re-export. --prune removes notes of this\n'
              '  tool that are no longer generated.')
@@ -950,7 +956,7 @@ def run_swdoc(argv: list) -> int:
         print(usage, file=sys.stderr)
         return 1
     opts = {"include": [], "exclude": [], "graph": None, "out": None, "dataset": None, "db": None, "module": None,
-            "mermaid": False, "prune": False, "single": False}
+            "mermaid": False, "prune": False, "single": False, "html": False}
     i, args = 0, list(argv)
     while i < len(args):
         a, nxt = args[i], args[i + 1] if i + 1 < len(args) else None
@@ -964,6 +970,8 @@ def run_swdoc(argv: list) -> int:
             opts["prune"] = True
         elif a == "--single-file":
             opts["single"] = True
+        elif a == "--html":
+            opts["html"] = True
         elif not a.startswith("--"):
             opts["include"].append(a)
         i += 1
@@ -990,12 +998,26 @@ def run_swdoc(argv: list) -> int:
             print(err, file=sys.stderr)
             return 1
         lookup = lambda name: params.describe(conn, dataset, name, max_cells=64, indent="", with_hint=False)  # noqa: E731
-    res = build_vault(raw, opts["include"], opts["exclude"], lookup, dataset or "", opts["mermaid"], opts["module"])
+    res = build_vault(raw, opts["include"], opts["exclude"], lookup, dataset or "", opts["mermaid"], opts["module"],
+                      want_notes=not opts["html"])
     if res["empty"]:
         print(f"No function with a source file containing {opts['include']}.")
         return 0
     out = Path(opts["out"]) if opts["out"] else gp.parent / "swdoc"
     out.mkdir(parents=True, exist_ok=True)
+    if opts["html"]:
+        from graphify.swdoc_html import write_html
+        name = res["module"]
+        target = out / f"{name}.html"
+        size = write_html(res, target, opts["module"] or name, dataset or "")
+        n = res["counts"]
+        print(f"swdoc {opts['include']}: ONE html file {target.name} ({size / 1e6:.1f} MB; functions {n['functions']}, "
+              f"variables {n['variables']}, calibrations {n['calibrations']}, axes {n['axes']}) -> {out}")
+        if size > 40_000_000:
+            print("  warning: more than 40 MB - the file opens slowly; export one component at a time instead")
+        if conn is not None:
+            conn.close()
+        return 0
     v = _Vault(out)
     if opts["single"]:
         name = res["module"]
