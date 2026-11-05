@@ -561,3 +561,16 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Component | folder of the source file |
 | Warning | printed above 40 MB |
 | Tests | data structure test + a headless browser test that opens every page (skipped without playwright) |
+
+## 51. Out parameters: `func(idx, &sig)` makes `sig` an output of the caller
+
+| Item | Detail |
+|---|---|
+| Problem | `&var` as a call argument was always a `reads_var` (+ `address_taken`), so a variable the callee fills showed as an INPUT of the caller |
+| Fix | interprocedural out-parameter analysis in `clang_c.py`: for every pointer parameter the callee body is analysed (`*p = v`, `p->m = v`, `p[i] = v`, `p->n++`, compound assignment = write; any other use = read; `f(p)` / `f(&p->m)` forwards to the next callee, recursion safe) |
+| Call sites | `f(&g)`, `f(&g.m)`, `f(&g[i])` and an array variable `f(arr)` are bound to the callee parameter once all files are walked: `writes_var` (and `reads_var` if also read) instead of an unconditional read. The edge carries `via_call` and `out_param` |
+| Unknown callee | no definition in the parsed files (extern, other library): the old default stays (`reads_var` + `address_taken`) |
+| libc | `memcpy`, `memmove`, `memset`, `strcpy`, `strncpy`, `strcat`, `strncat`, `sprintf`, `snprintf`: argument 0 is written, the others are read |
+| Parameter roles | the function node `parameters[].role` becomes `out`, `in/out` or `in` from the analysis (was only `output_candidate` / `input` from the type) |
+| Not covered | a global POINTER variable passed on (`f(gp)`): the pointee cannot be attributed to a variable; struct copies; function pointers (fallback) |
+| Needs | the callee must be in the parsed file set: with a partial extraction a callee outside it falls back to the old default |

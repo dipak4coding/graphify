@@ -668,3 +668,59 @@ def test_double_encoded_source_comment_is_repaired(tmp_path):
     nodes, _ = _run(tmp_path)
     fn = [n for n in nodes if n.get("label") == "Chk()"][0]
     assert fn["metadata"]["doxygen"] == "/** Prüfen für °C */"
+
+
+def _var_edges(nodes, edges):
+    lab = {n["id"]: n["label"] for n in nodes}
+    out = {}
+    for e in edges:
+        if e["relation"] in ("reads_var", "writes_var", "reads_writes_var"):
+            out.setdefault((lab[e["source"]], lab[e["target"]]), set()).add(e["relation"])
+    return out, {n["label"]: n for n in nodes}
+
+
+def test_out_parameter_makes_the_passed_variable_an_output_not_an_input(tmp_path):
+    """func(idx, &sig): func writes through its pointer parameter, so sig is an OUTPUT of the caller."""
+    (tmp_path / "t.c").write_text(
+        "typedef struct { int Val; int Cnt; } SigT;\nSigT sig, sigB, sigC, sigD, sigE;\nint tab[4];\nint rd_only;\n"
+        "extern void Ext_Fill(int i, SigT *p);\nvoid *memcpy(void *d, const void *s, unsigned n);\n"
+        "static void func(int Arg_Idx, SigT *Arg_Signal) { Arg_Signal->Val = Arg_Idx; }\n"
+        "static void func_rw(int i, SigT *p) { p->Cnt += i; }\n"
+        "static void func_r(int i, const SigT *p) { rd_only = p->Val + i; }\n"
+        "static void fwd(int i, SigT *q) { func(i, q); }\n"
+        "static void arr_fill(int *a) { a[1] = 5; }\n"
+        "static void star(int *a) { *a = 7; }\n"
+        "void haupt_function(int index) { func(index, &sig); }\n"
+        "void h_rw(int index) { func_rw(index, &sigB); }\n"
+        "void h_r(int index) { func_r(index, &sigC); }\n"
+        "void h_fwd(int index) { fwd(index, &sigD); }\n"
+        "void h_arr(void) { arr_fill(tab); star(&tab[2]); }\n"
+        "void h_ext(int index) { Ext_Fill(index, &sigE); }\n"
+        "void h_mem(void) { memcpy(&sigB, &sigC, 8); }\n", encoding="utf-8")
+    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    nodes, edges = _run(tmp_path)
+    v, by = _var_edges(nodes, edges)
+    assert v[("haupt_function()", "sig")] == {"writes_var"}                    # the reported case: output, not input
+    assert v[("h_rw()", "sigB")] == {"reads_writes_var"} or v[("h_rw()", "sigB")] == {"reads_var", "writes_var"}
+    assert v[("h_r()", "sigC")] == {"reads_var"}                               # const / read-only parameter: input
+    assert v[("h_fwd()", "sigD")] == {"writes_var"}                            # written through a forwarded parameter
+    assert v[("h_arr()", "tab")] == {"writes_var"}                             # array argument and &tab[i]
+    assert v[("h_ext()", "sigE")] == {"reads_var"}                             # callee unknown: the old default
+    e = next(e for e in edges if e["relation"] == "reads_var" and e["target"] == by["sigE"]["id"])
+    assert e["metadata"].get("address_taken") is True
+    assert v[("h_mem()", "sigB")] == {"writes_var"} and v[("h_mem()", "sigC")] == {"reads_var"}   # memcpy dest / src
+    w = next(e for e in edges if e["relation"] == "writes_var" and e["source"] == by["haupt_function()"]["id"])
+    assert w["metadata"]["via_call"] == "func" and w["metadata"]["out_param"] is True
+    roles = {p["name"]: p["role"] for p in by["func()"]["metadata"]["parameters"]}
+    assert roles["Arg_Signal"] == "out" and roles["Arg_Idx"] == "input"
+    assert {p["name"]: p["role"] for p in by["func_rw()"]["metadata"]["parameters"]}["p"] == "in/out"
+    assert {p["name"]: p["role"] for p in by["func_r()"]["metadata"]["parameters"]}["p"] == "in"
+
+
+def test_out_parameter_callee_in_another_file_and_recursion(tmp_path):
+    (tmp_path / "a.c").write_text("typedef struct { int V; } S;\nS g;\nvoid setter(int i, S *p);\nvoid caller(void) { setter(1, &g); }\n", encoding="utf-8")
+    (tmp_path / "b.c").write_text("typedef struct { int V; } S;\nvoid setter(int i, S *p) { if (i) setter(i - 1, p); else p->V = i; }\n", encoding="utf-8")
+    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    nodes, edges = _run(tmp_path)
+    v, _ = _var_edges(nodes, edges)
+    assert v[("caller()", "g")] == {"writes_var"}

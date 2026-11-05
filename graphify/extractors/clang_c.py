@@ -367,6 +367,10 @@ _C_BINOP_ASSIGN = {22: "=", 23: "*=", 24: "/=", 25: "%=", 26: "+=", 27: "-=",
                    28: "<<=", 29: ">>=", 30: "&=", 31: "^=", 32: "|="}
 _C_UNOP_INCDEC = {1, 2, 3, 4}  # x++, x--, ++x, --x
 _C_UNOP_ADDROF = 5
+_C_UNOP_DEREF = 6
+# libc functions with a known out parameter (index of the written pointer argument); every other argument is read
+_KNOWN_OUT_PARAMS = {"memcpy": {0}, "memmove": {0}, "memset": {0}, "strcpy": {0}, "strncpy": {0}, "strcat": {0},
+                     "strncat": {0}, "sprintf": {0}, "snprintf": {0}}
 _INT_BINOPS = {"+": lambda a, b: a + b, "-": lambda a, b: a - b, "*": lambda a, b: a * b,
                "<<": lambda a, b: a << b}
 _MAX_LINES_PER_EDGE = 8
@@ -425,6 +429,12 @@ class ClangExtractor:
         self.nodes: dict = {}
         self.edges: dict = {}  # (src, tgt, rel) -> edge dict
         self.decl_only: set = set()
+        # out-parameter analysis: how a function uses its pointer parameters, and the call sites that pass a variable
+        self.param_fx: dict = {}          # func_id -> {param index: {"w", "r", "u", "fwd": {(callee_id, arg index, callee name)}}}
+        self.pending_binds: list = []     # call sites passing &var / an array variable to a callee
+        self._defs_by_label: dict = {}
+        self._cur_fn_id = None
+        self._cur_params: dict = {}       # (name, line, col) of a pointer PARM_DECL -> parameter index
         self.ptr_to_rom: dict = {}
         self._leaf_cache: dict = {}
         self._leaf_docs: dict = {}      # struct type spelling -> {relative member path: raw doxygen comment}
@@ -575,6 +585,172 @@ class ClangExtractor:
                 return c
             c = kids[0]
         return c
+
+    # ---- out-parameter analysis ------------------------------------------------------
+
+    @staticmethod
+    def _pkey(p):
+        loc = p.location
+        return (p.spelling, loc.line, loc.column)
+
+    def _is_ptr_type(self, t) -> bool:
+        try:
+            return t.get_canonical().kind in (self.T.POINTER, self.T.CONSTANTARRAY, self.T.INCOMPLETEARRAY)
+        except Exception:
+            return False
+
+    def _param_index(self, expr):
+        """Index of the tracked pointer parameter `expr` names (after casts), or None."""
+        e = self._peel(expr)
+        if e.kind == self.K.DECL_REF_EXPR and e.referenced is not None and e.referenced.kind == self.K.PARM_DECL:
+            return self._cur_params.get(self._pkey(e.referenced))
+        return None
+
+    def _deref_chain(self, c):
+        """`*p`, `p->m`, `p[i]`, `p->a[i].b` rooted at a tracked pointer parameter: (index, index exprs to walk) or None.
+        A bare `p` is not a dereference (`p = x` only changes the local pointer)."""
+        K, extras, deref = self.K, [], False
+        for _ in range(32):
+            c = self._peel(c)
+            if c.kind == K.DECL_REF_EXPR:
+                idx = self._param_index(c) if deref else None
+                return (idx, extras) if idx is not None else None
+            if c.kind == K.UNARY_OPERATOR:
+                if self._c_op_kind(c, "clang_getCursorUnaryOperatorKind") != _C_UNOP_DEREF:
+                    return None
+                kids = list(c.get_children())
+                if len(kids) != 1:
+                    return None
+                deref, c = True, kids[0]
+                continue
+            if c.kind not in (K.ARRAY_SUBSCRIPT_EXPR, K.MEMBER_REF_EXPR):
+                return None
+            kids = list(c.get_children())
+            if not kids:
+                return None
+            base = self._peel(kids[0])
+            if self._is_ptr_type(base.type):               # p[i] and p->m go through the pointer
+                deref = True
+            extras.extend(kids[1:])
+            c = base
+        return None
+
+    def _fx(self, idx) -> dict:
+        return self.param_fx[self._cur_fn_id][idx]
+
+    def _handle_call_args(self, cursor, fn_id, sfile, callee_id, callee_name) -> bool:
+        """Arguments that hand a variable or a pointer parameter to the callee.
+
+        `f(&g)` / `f(g_array)`: remember the call site; once every function is known, `g` is WRITTEN if f writes
+        through that parameter (and read if f reads through it), instead of always being a read.
+        `f(p)` / `f(&p->m)` with p a pointer parameter of the current function: p's effect includes f's."""
+        if fn_id is None:
+            return False
+        kids = list(cursor.get_children())
+        if len(kids) < 2:
+            return False
+        plan = {}
+        for i, a in enumerate(kids[1:]):
+            b = self._peel(a)
+            pidx = self._param_index(b) if self._cur_params else None
+            extras = []
+            if pidx is None and b.kind == self.K.UNARY_OPERATOR \
+                    and self._c_op_kind(b, "clang_getCursorUnaryOperatorKind") == _C_UNOP_ADDROF:
+                inner = list(b.get_children())
+                if len(inner) == 1:
+                    ch = self._deref_chain(inner[0]) if self._cur_params else None
+                    if ch is not None:
+                        pidx, extras = ch
+                    else:
+                        root, extras = self._lvalue_root(inner[0])
+                        if root is not None:
+                            plan[i] = ("bind", root.referenced, extras, True)
+                            continue
+            elif pidx is None and b.kind == self.K.DECL_REF_EXPR and self._is_global_var(b.referenced) \
+                    and self._is_ptr_type(b.referenced.type) and \
+                    b.referenced.type.get_canonical().kind != self.T.POINTER:
+                plan[i] = ("bind", b.referenced, [], False)           # an array variable decays to a pointer
+                continue
+            if pidx is not None:
+                plan[i] = ("fwd", pidx, extras)
+        if not plan:
+            return False
+        self.walk(kids[0], fn_id, sfile)
+        line = cursor.location.line
+        for i, a in enumerate(kids[1:]):
+            item = plan.get(i)
+            if item is None:
+                self.walk(a, fn_id, sfile)
+            elif item[0] == "fwd":
+                fx = self._fx(item[1])
+                if callee_id is None:
+                    fx["u"] = True
+                else:
+                    fx["fwd"].add((callee_id, i, callee_name))
+                for x in item[2]:
+                    self.walk(x, fn_id, sfile)
+            else:
+                var_id = self._global_var(item[1], sfile)
+                self.pending_binds.append({"fn": fn_id, "callee": callee_id, "name": callee_name, "arg": i,
+                                           "var": var_id, "line": line, "file": sfile, "addr": item[3]})
+                for x in item[2]:
+                    self.walk(x, fn_id, sfile)
+        return True
+
+    def _param_effect(self, fid, i, name, seen):
+        """(writes, reads, unknown) of pointer parameter `i` of function `fid` (callee `name`)."""
+        fid = self._canon(fid)
+        if name in _KNOWN_OUT_PARAMS and not (fid in self.param_fx):
+            return (i in _KNOWN_OUT_PARAMS[name], i not in _KNOWN_OUT_PARAMS[name], False)
+        if (fid, i) in seen:
+            return (False, False, False)
+        seen.add((fid, i))
+        fx = self.param_fx.get(fid, {}).get(i)
+        if fx is None:
+            return (False, False, True)                    # no definition seen, or not a pointer parameter
+        w, r, u = fx["w"], fx["r"], fx["u"]
+        for cid, j, cname in fx["fwd"]:
+            cw, cr, cu = self._param_effect(cid, j, cname, seen)
+            w, r, u = w or cw, r or cr, u or cu
+        return (w, r, u)
+
+    def _canon(self, fid):
+        """A callee seen only as a prototype (another file defines it) gets the id of its definition, like finalize()."""
+        if fid in self.param_fx or fid not in self.decl_only or fid not in self.nodes:
+            return fid
+        defs = self._defs_by_label.get(self.nodes[fid]["label"], [])
+        return defs[0] if len(defs) == 1 else fid
+
+    def _resolve_binds(self) -> None:
+        """Turn the recorded call sites into writes_var / reads_var edges and set the parameter roles."""
+        binds, self.pending_binds = self.pending_binds, []
+        self._defs_by_label = {}
+        for nid, n in self.nodes.items():
+            if n["type"] == "function" and nid not in self.decl_only:
+                self._defs_by_label.setdefault(n["label"], []).append(nid)
+        for b in binds:
+            w, r, u = (False, False, True) if b["callee"] is None else self._param_effect(b["callee"], b["arg"], b["name"], set())
+            if not (w or r or u):
+                r = True                                       # the callee ignores the parameter: keep the old default
+            if w:
+                self.add_edge(b["fn"], b["var"], "writes_var", b["file"], b["line"],
+                              metadata={"via_call": b["name"] or "", "out_param": True})
+            if r or u:
+                self.add_edge(b["fn"], b["var"], "reads_var", b["file"], b["line"])
+                if u and b["addr"]:
+                    self.edges[(b["fn"], b["var"], "reads_var")]["metadata"]["address_taken"] = True
+        for fid, fx in self.param_fx.items():
+            node = self.nodes.get(fid)
+            params = (node or {}).get("metadata", {}).get("parameters")
+            if not isinstance(params, list):
+                continue
+            for i, p in enumerate(params):
+                if i in fx and isinstance(p, dict):
+                    w, r, u = self._param_effect(fid, i, "", set())
+                    if w and not u:
+                        p["role"] = "in/out" if r else "out"
+                    elif r and not w and not u:
+                        p["role"] = "in"
 
     def _lvalue_root(self, c):
         """(DECL_REF of the global variable an lvalue stores into, index exprs to walk).
@@ -1087,6 +1263,16 @@ class ClangExtractor:
                 for x in extras:
                     self.walk(x, fn_id, sfile)
                 handled_lhs = True
+            elif self._cur_params:
+                pinfo = self._deref_chain(lhs)
+                if pinfo is not None:                          # `*p = v`, `p->m = v`, `p[i] = v`: writes through parameter p
+                    fx = self._fx(pinfo[0])
+                    fx["w"] = True
+                    if op != "=":
+                        fx["r"] = True
+                    for x in pinfo[1]:
+                        self.walk(x, fn_id, sfile)
+                    handled_lhs = True
         self.walk(rhs, fn_id, sfile)
         if not handled_lhs:
             self.walk(lhs, fn_id, sfile)
@@ -1105,6 +1291,14 @@ class ClangExtractor:
         if inner.kind in (self.K.MEMBER_REF_EXPR, self.K.ARRAY_SUBSCRIPT_EXPR) \
                 and self._handle_calibration_access(inner, fn_id, sfile):
             return True
+        if uk in _C_UNOP_INCDEC and self._cur_params:
+            pinfo = self._deref_chain(kids[0])
+            if pinfo is not None:                              # `p->n++`: reads and writes through parameter p
+                fx = self._fx(pinfo[0])
+                fx["w"] = fx["r"] = True
+                for x in pinfo[1]:
+                    self.walk(x, fn_id, sfile)
+                return True
         root, extras = self._lvalue_root(kids[0])
         if root is None:
             return False
@@ -1150,12 +1344,19 @@ class ClangExtractor:
                                     "parameters": self._parameters(cursor), "source_extractor": "clang",
                                     **self._comment_meta(cursor), **self._doxygen_of(cursor)},
                           definition=True)
+            params = [ch for ch in cursor.get_children() if ch.kind == K.PARM_DECL]
+            saved = (self._cur_fn_id, self._cur_params)
+            self._cur_fn_id = func_id
+            self._cur_params = {self._pkey(pm): i for i, pm in enumerate(params) if self._is_ptr_type(pm.type)}
+            self.param_fx[func_id] = {i: {"w": False, "r": False, "u": False, "fwd": set()} for i in self._cur_params.values()}
             for child in cursor.get_children():
                 self.walk(child, func_id, fpath)
+            self._cur_fn_id, self._cur_params = saved
             return
 
         if kind == K.CALL_EXPR and fn_id is not None:
             callee = cursor.referenced
+            callee_id = None
             if callee is not None and callee.spelling:
                 defn = None
                 try:
@@ -1173,9 +1374,15 @@ class ClangExtractor:
             self._handle_ipo(cursor, fn_id, sfile)
             if cursor.spelling in self.register_funcs:
                 return  # &ptr / &rom are registration plumbing, not data reads
+            if self._handle_call_args(cursor, fn_id, sfile, callee_id, callee.spelling if callee is not None else ""):
+                return
 
         if kind == K.DECL_REF_EXPR and fn_id is not None:
             ref = cursor.referenced
+            if self._cur_params and ref is not None and ref.kind == K.PARM_DECL:
+                pi = self._cur_params.get(self._pkey(ref))
+                if pi is not None:
+                    self._fx(pi)["r"] = True
             if self._is_global_var(ref):
                 var_id = self._global_var(ref, sfile)
                 self.add_edge(fn_id, var_id, "reads_var", sfile, cursor.location.line)
@@ -1362,6 +1569,7 @@ class ClangExtractor:
 
     def finalize(self):
         """-> (nodes, edges): unify decl-only symbols, collapse read+write pairs."""
+        self._resolve_binds()
         by_name: dict = {}
         for nid, n in self.nodes.items():
             if n["type"] in ("function", "variable") and nid not in self.decl_only:
