@@ -724,3 +724,22 @@ def test_out_parameter_callee_in_another_file_and_recursion(tmp_path):
     nodes, edges = _run(tmp_path)
     v, _ = _var_edges(nodes, edges)
     assert v[("caller()", "g")] == {"writes_var"}
+
+
+def test_call_sequence_is_in_execution_order_with_control_flow_context(tmp_path):
+    (tmp_path / "t.c").write_text(
+        "int a(int x); int b(void); int c(void); int d(int x); int e(void); int f2(void);\nint g;\n"
+        "void leaf(void) { }\nstatic int h(int x) { return x; }\n"
+        "void run(int k) {\n    leaf();\n    if (k > 0 && b()) { c(); } else { e(); }\n"
+        "    for (int i = 0; i < 3; i++) { h(i); }\n    switch (k) { case 1: d(h(1)); break; default: break; }\n"
+        "    g = k ? a(1) : f2();\n    d(h(2));\n}\n"
+        "void top(void) { run(1); leaf(); run(2); }\n", encoding="utf-8")
+    (tmp_path / "graphify-clang.json").write_text(json.dumps({"extra_args": ["-I."]}), encoding="utf-8")
+    nodes, _ = _run(tmp_path)
+    lab = {n["id"]: n["label"] for n in nodes}
+    by = {n["label"]: n for n in nodes}
+    seq = [(lab[x["id"]], x["line"], x.get("ctx", "")) for x in by["run()"]["metadata"]["call_sequence"]]
+    assert seq == [("leaf()", 6, ""), ("b()", 7, "&&"), ("c()", 7, "if"), ("e()", 7, "else"), ("h()", 8, "loop"),
+                   ("h()", 9, "switch"), ("d()", 9, "switch"),           # d(h(1)): the argument runs first
+                   ("a()", 10, "?:"), ("f2()", 10, "?:"), ("h()", 11, ""), ("d()", 11, "")]
+    assert [lab[x["id"]] for x in by["top()"]["metadata"]["call_sequence"]] == ["run()", "leaf()", "run()"]

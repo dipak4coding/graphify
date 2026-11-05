@@ -100,6 +100,9 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
                        "ca": ids(M.targets(n, {S.CAL_READ}, ("calibration_field",))),
                        "cl": ids(M.targets(n, CALL, ("function",))), "cb": ids(M.sources(n, CALL, ("function",)))})
             it["n"] = re.sub(r"\(\)$", "", M.label(n))
+            sq = [[idx[cid], line, S._ctx_text(ctx)] for cid, line, ctx in M.call_sequence(n) if cid in idx]
+            if sq:
+                it["sq"] = sq                              # calls in execution order: [callee, line, context]
             if isinstance(m.get("parameters"), list):
                 pd = m.get("comment_params") if isinstance(m.get("comment_params"), dict) else {}
                 it["par"] = [{"n": p.get("name", ""), "t": p.get("type", ""), "r": p.get("role", ""), "d": pd.get(p.get("name"), "")}
@@ -168,7 +171,9 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
     for it in items:
         if it.get("parent"):
             it["parent"] = by_path.get(it["parent"])
-    return {"title": title, "dataset": dataset, "it": items, "comps": comps}
+    sp = [[idx[f], len(M.targets(f, CALL, ("function",))), M.reach(f)] for f in S.start_points(M, funcs)]
+    sp.sort(key=lambda r: (-r[2], items[r[0]]["n"].lower()))
+    return {"title": title, "dataset": dataset, "it": items, "comps": comps, "sp": sp}
 
 
 def render(data: dict) -> str:
@@ -209,6 +214,8 @@ code{background:var(--code);padding:0 4px;border-radius:3px;font-size:12.5px}.mu
 .flow rect{fill:var(--hl);stroke:var(--acc);stroke-width:1}.flow .out rect{fill:var(--code);stroke:var(--mut)}.flow .me rect{fill:var(--acc)}.flow .me text{fill:#fff}
 .flow text{fill:var(--fg);font:12px system-ui,sans-serif}.flow path{fill:none;stroke:var(--mut);stroke-width:1.1}.flow path.back{stroke-dasharray:4 3}
 .enum{font-size:12px;color:var(--mut)}
+.tr{margin:4px 0 4px 0;padding-left:0;list-style:none}.tr details{margin-left:16px}.tr summary{cursor:pointer;padding:1px 0}.tr .lf{margin-left:34px;padding:1px 0}
+.ctx{font-size:11px;color:var(--mut);border:1px dashed var(--mut);border-radius:8px;padding:0 6px;margin-left:6px}.ln{color:var(--mut);font-size:11px;margin-left:6px}
 </style></head><body>
 <div id="side"><h1><a href="#" id="home"></a></h1><input id="q" placeholder="Search name or description ..." autocomplete="off">
 <div id="chips"></div><div id="list"></div></div>
@@ -257,12 +264,25 @@ function flow(nodes,edges){
   o+=x.href?`<a href="${x.href}">${g}</a>`:g});
  return `<div class="flow">${o}</svg></div>`}
 const MAXFLOW=140;
+// ---------- calls in execution order + lazy execution trace ----------
+function seqOf(i){const x=IT[i];return x.sq||(x.cl||[]).map(c=>[c,0,''])}
+function seqLine(s){return `${A(s[0])}${s[1]?`<span class="ln">L${s[1]}</span>`:''}${s[2]?`<span class="ctx">${esc(s[2])}</span>`:''}`}
+function traceChildren(id,path){
+ return seqOf(id).map(s=>{const c=s[0],x=IT[c],rec=path.indexOf(c)>=0,has=x.t==='f'&&seqOf(c).length>0;
+  if(rec)return `<div class="lf">&#8635; ${A(c)} <span class="ctx">recursion</span></div>`;
+  if(!has)return `<div class="lf">${seqLine(s)}</div>`;
+  return `<details data-id="${c}" data-path="${path.concat([c]).join(',')}"><summary>${seqLine(s)}</summary></details>`}).join('')}
+function traceBlock(id){return `<div class="tr" id="trace"><details data-id="${id}" data-path="${id}" open><summary><b>${esc(IT[id].n)}</b></summary>${traceChildren(id,[id])}</details></div>`}
+main.addEventListener('toggle',e=>{const d=e.target;if(d.tagName!=='DETAILS'||!d.dataset.id||d.dataset.done)return;
+ if(d.open){d.dataset.done=1;if(d.children.length<=1)d.insertAdjacentHTML('beforeend',traceChildren(+d.dataset.id,d.dataset.path.split(',').map(Number)))}},true);
 
 // ---------- pages ----------
 function pageHome(){
  const nf=IT.filter(x=>x.t==='f').length,nv=IT.filter(x=>x.t==='v').length,nc=IT.filter(x=>x.t==='c').length;
  main.innerHTML=`<h2>${esc(D.title)}</h2><div class="meta">${nf} functions &middot; ${nv} variables &middot; ${nc} calibrations &middot; ${C.length} components`+(D.dataset?` &middot; values from dataset <code>${esc(D.dataset)}</code>`:'')+`</div>
- <h3>Components</h3>`+table(['Component','Functions','Inputs','Outputs'],C.map((c,k)=>[`<a href="#k/${k}">${esc(c.n)}</a>`,c.f.length,c.in.length,c.out.length]))}
+ <h3>Components</h3>`+table(['Component','Functions','Inputs','Outputs'],C.map((c,k)=>[`<a href="#k/${k}">${esc(c.n)}</a>`,c.f.length,c.in.length,c.out.length]))
+ +`<h3>Start points</h3><p class="mut">Functions that no function in the code calls: tasks, init, interrupts, diagnostics - or unused code. Sorted by how much they reach.</p>`
+ +table(['Function','Component','Calls','Reaches'],D.sp.slice(0,300).map(([f,n,r])=>[A(f),esc(C[IT[f].c].n),n,r+' functions']))+(D.sp.length>300?`<p class="mut">+${D.sp.length-300} more</p>`:'')}
 function outsideGroup(i){const g=folder(IT[i].file)||'?';const k=C.findIndex(c=>c.n===g);return {g,k}}
 function pageComp(k){
  const c=C[k],fs=new Set(c.f);let h=`<h2>${esc(c.n)}</h2><div class="meta"><span class="tag">Component</span>${c.f.length} functions &middot; ${c.in.length} inputs &middot; ${c.out.length} outputs</div>`;
@@ -301,7 +321,8 @@ function pageItem(id){
   if(!x.rd.length&&!x.ca.length)h+=`<p class="mut">reads no variable or calibration</p>`;
   h+=`<h4>Callers</h4><p>${list(x.cb||[],60)}</p><h3>Outputs</h3>`;
   h+=x.wr.length?`<h4>Variables written</h4>`+sigTable(x.wr.map(r=>r[0]),{head:['At'],row:id=>[`<code>${esc((x.wr.find(r=>r[0]===id)||[])[1]||'')}</code>`]}):'<p class="mut">writes no variable</p>';
-  h+=`<h4>Calls</h4><p>${list(x.cl,60)}</p>`}
+  if(x.cl.length){const sq=seqOf(id);h+=`<h4>Calls in execution order</h4><ol>${sq.slice(0,150).map(s=>`<li>${seqLine(s)}</li>`).join('')}</ol>`+(sq.length>150?`<p class="mut">+${sq.length-150} more calls</p>`:'')+(x.sq?'':'<p class="mut">The order was not recorded in this graph (re-run the clang extraction); the list is alphabetical.</p>')
+   +`<h3>Execution trace</h3><p class="mut">All calls below this function in code order. Open a call to see what it calls. Dashed tags: conditional or repeated calls.</p>`+traceBlock(id)}}
  else if(x.t==='b'){const cb=CB.get(id)||[];h=head(x,id,' &middot; not part of the exported scope')+docBlock(x)+`<h3>Called by</h3><p>${list(cb,80)}</p>`}
  else if(x.t==='v'){
   h=head(x,id,(x.st?` &middot; ${esc(x.st)}`:'')+(x.di?` &middot; defined in <code>${esc(x.di)}</code>`:''))+docBlock(x);

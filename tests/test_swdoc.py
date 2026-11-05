@@ -322,3 +322,35 @@ def test_html_pages_render_without_javascript_errors(tmp_path):
             assert page.inner_text("#main h2")
         b.close()
     assert not errs, errs
+
+
+def _seq_graph():
+    g = {"directed": False, "links": [], "nodes": []}
+    for fid, name, extra in (("Top", "Top()", {}), ("Run", "Run()", {}), ("A", "A()", {}), ("B", "B()", {})):
+        g["nodes"].append(_n(fid, name, "function", sf="kku/kku.c", loc="L1", has_definition=True, **extra))
+    g["nodes"][0]["metadata"]["call_sequence"] = [{"id": "Run", "line": 5}, {"id": "Run", "line": 6, "ctx": "loop"}]
+    g["nodes"][1]["metadata"]["call_sequence"] = [{"id": "B", "line": 12}, {"id": "A", "line": 13, "ctx": "if"}]
+    for a, b in (("Top", "Run"), ("Run", "A"), ("Run", "B")):
+        g["links"].append(_e(a, b, "calls"))
+    return g
+
+
+def test_calls_in_execution_order_start_points_and_html_trace(tmp_path):
+    g = _seq_graph()
+    r = swdoc.build_vault(g, ["kku/"])
+    run = r["notes"]["functions/Run.md"]
+    assert run.index("1. [[B]] `L12`") < run.index("2. [[A]] `L13` - *if*")                     # code order, not alphabetical
+    top = r["notes"]["functions/Top.md"]
+    assert "2. [[Run]] `L6` - *repeated (loop)*" in top
+    mod = r["notes"]["modules/kku.md"]
+    sp = mod.split("## Start points")[1].split("## Call flow")[0]
+    assert "[[Top]]" in sp and "[[Run]]" not in sp and "3 functions" in sp                       # nobody calls Top; it reaches Run, A, B
+    gp = tmp_path / "g.json"
+    gp.write_text(json.dumps(g), encoding="utf-8")
+    swdoc.run_swdoc([".", "--module", "Software", "--graph", str(gp), "--out", str(tmp_path / "o"), "--html"])
+    html = (tmp_path / "o" / "Software.html").read_text(encoding="utf-8")
+    data = json.loads(re.search(r'<script id="data" type="application/json">(.*?)</script>', html, re.S).group(1).replace("<\\/", "</"))
+    names = [it["n"] for it in data["it"]]
+    run_it = data["it"][names.index("Run")]
+    assert [x[0] for x in run_it["sq"]] == [names.index("B"), names.index("A")] and run_it["sq"][1][2] == "if"
+    assert [row[0] for row in data["sp"]] == [names.index("Top")] and data["sp"][0][2] == 3

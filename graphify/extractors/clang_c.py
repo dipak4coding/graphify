@@ -367,6 +367,7 @@ _C_BINOP_ASSIGN = {22: "=", 23: "*=", 24: "/=", 25: "%=", 26: "+=", 27: "-=",
                    28: "<<=", 29: ">>=", 30: "&=", 31: "^=", 32: "|="}
 _C_UNOP_INCDEC = {1, 2, 3, 4}  # x++, x--, ++x, --x
 _C_UNOP_ADDROF = 5
+_C_BINOP_SHORT = {20: "&&", 21: "||"}
 _C_UNOP_DEREF = 6
 # libc functions with a known out parameter (index of the written pointer argument); every other argument is read
 _KNOWN_OUT_PARAMS = {"memcpy": {0}, "memmove": {0}, "memset": {0}, "strcpy": {0}, "strncpy": {0}, "strcat": {0},
@@ -405,6 +406,7 @@ def _join_tokens(toks) -> str:
         out += t
     return out
 
+_MAX_CALL_SEQ = 400        # call sites kept per function in its call_sequence
 _MAX_DOXYGEN = 8000        # characters of a doxygen comment kept per symbol (longer ones are cut and flagged)
 _MAX_STRUCT_DEPTH = 10      # nesting levels followed when a calibration struct is read as a whole
 _MAX_STRUCT_MEMBERS = 500    # member leaves kept per struct type (the rest is reported as truncated)
@@ -416,6 +418,8 @@ class ClangExtractor:
         self.ci = cindex
         self.K = cindex.CursorKind
         self.T = cindex.TypeKind
+        K = self.K
+        self._control_kinds = {K.IF_STMT, K.FOR_STMT, K.WHILE_STMT, K.DO_STMT, K.SWITCH_STMT, K.CONDITIONAL_OPERATOR}
         self.root = root
         self.cfg = cfg
         self.register_funcs = set(cfg.register_functions)
@@ -432,6 +436,8 @@ class ClangExtractor:
         # out-parameter analysis: how a function uses its pointer parameters, and the call sites that pass a variable
         self.param_fx: dict = {}          # func_id -> {param index: {"w", "r", "u", "fwd": {(callee_id, arg index, callee name)}}}
         self.pending_binds: list = []     # call sites passing &var / an array variable to a callee
+        self.call_seq: dict = {}          # func_id -> [(end line, end col, ctx, line, callee id)]: every call site of the body
+        self._ctx: list = []              # control-flow context while walking: "if", "else", "loop", "switch", "?:", "&&"
         self._defs_by_label: dict = {}
         self._cur_fn_id = None
         self._cur_params: dict = {}       # (name, line, col) of a pointer PARM_DECL -> parameter index
@@ -1371,6 +1377,9 @@ class ClangExtractor:
                               definition=defn is not None, decl_only=defn is None,
                               metadata={"source_extractor": "clang", **self._doxygen_of(target)})
                 self.add_edge(fn_id, callee_id, "calls", sfile, cursor.location.line)
+                end = cursor.extent.end
+                self.call_seq.setdefault(fn_id, []).append((end.line, end.column, " > ".join(self._ctx[-3:]),
+                                                            cursor.location.line, callee_id))
             self._handle_ipo(cursor, fn_id, sfile)
             if cursor.spelling in self.register_funcs:
                 return  # &ptr / &rom are registration plumbing, not data reads
@@ -1408,8 +1417,42 @@ class ClangExtractor:
             else:
                 self.skipped_extern_decls += 1
 
+        if fn_id is not None and (kind in self._control_kinds or
+                                  (kind == K.BINARY_OPERATOR and self._shortcircuit(cursor))):
+            self._walk_control(cursor, fn_id, sfile)
+            return
+
         for child in cursor.get_children():
             self.walk(child, fn_id, sfile)
+
+    def _walk_control(self, cursor, fn_id, sfile):
+        """Walk if / else / loops / switch / `?:` / `&&` `||` bodies with their context pushed, so every call
+        site knows whether it always runs, runs conditionally or repeatedly."""
+        K, kind = self.K, cursor.kind
+        kids = list(cursor.get_children())
+        if kind == K.IF_STMT:
+            plan = [("", kids[:1]), ("if", kids[1:2]), ("else", kids[2:])]
+        elif kind == K.SWITCH_STMT:
+            plan = [("", kids[:1]), ("switch", kids[1:])]
+        elif kind == K.CONDITIONAL_OPERATOR:
+            plan = [("", kids[:1]), ("?:", kids[1:])]
+        elif kind == K.BINARY_OPERATOR:
+            plan = [("", kids[:1]), (self._shortcircuit(cursor), kids[1:])]
+        else:                                             # for / while / do: all parts repeat
+            plan = [("loop", kids)]
+        for ctx, part in plan:
+            if ctx:
+                self._ctx.append(ctx)
+            try:
+                for ch in part:
+                    self.walk(ch, fn_id, sfile)
+            finally:
+                if ctx:
+                    self._ctx.pop()
+
+    def _shortcircuit(self, cursor) -> str:
+        """`&&` / `||` (the right operand runs only conditionally), else ''."""
+        return _C_BINOP_SHORT.get(self._c_op_kind(cursor, "clang_getCursorBinaryOperatorKind"), "")
 
     # ---- translation units ------------------------------------------------------------
 
@@ -1618,6 +1661,17 @@ class ClangExtractor:
                 merged["source_location"] = f"L{lines[0]}"
             edges[(src, tgt, "reads_writes_var")] = merged
 
+        for fid, seq in self.call_seq.items():             # calls of a function in execution order (end of the call expr)
+            node = self.nodes.get(remap.get(fid, fid))
+            if node is None:
+                continue
+            ordered = []
+            for _el, _ec, ctx, line, cid in sorted(seq, key=lambda x: (x[0], x[1])):
+                cid = remap.get(cid, cid)
+                if cid in self.nodes:
+                    ordered.append({"id": cid, "line": line, **({"ctx": ctx} if ctx else {})})
+            if ordered:
+                node["metadata"]["call_sequence"] = ordered[:_MAX_CALL_SEQ]
         self.final_decl_only = {nid for nid in self.decl_only if nid in self.nodes}
         for nid in self.final_decl_only:
             self.nodes[nid]["metadata"]["declaration_only"] = True

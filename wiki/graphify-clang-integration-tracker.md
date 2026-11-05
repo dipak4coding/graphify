@@ -574,3 +574,15 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Parameter roles | the function node `parameters[].role` becomes `out`, `in/out` or `in` from the analysis (was only `output_candidate` / `input` from the type) |
 | Not covered | a global POINTER variable passed on (`f(gp)`): the pointee cannot be attributed to a variable; struct copies; function pointers (fallback) |
 | Needs | the callee must be in the parsed file set: with a partial extraction a callee outside it falls back to the old default |
+
+## 52. Calling order: call sequence, start points, execution trace
+
+| Item | Detail |
+|---|---|
+| Extraction | every call site is recorded in `clang_c.py` with its control-flow context (`if`, `else`, `loop`, `switch`, `?:`, `&&`, `||`; nested contexts joined with ` > `). Written to the function node as `metadata.call_sequence = [{id, line, ctx}]`, ordered by the END position of the call expression, so `d(h(1))` runs `h` before `d`. Max 400 entries per function |
+| Needs | re-run the clang extraction (older graphs have no `call_sequence`; the pages then fall back to the alphabetical list) |
+| Obsidian function page | "Calls (in execution order)": numbered list with line and a tag for conditional / repeated calls |
+| Obsidian module page | new section "Start points": functions of the component that no function in the code calls, with the number of functions they reach |
+| HTML | function page: ordered call list and a lazy "Execution trace" tree (open a call to see what it calls; recursion marked); home page: Start points table sorted by reach |
+| Limits | this is the code order, not a real run: all branches are shown. The order between tasks / cycle times is not in the code (needs the scheduler table). Calls through function pointers are not in the sequence |
+| Not built yet | data order (which function must run before another, from write -> read links); task table import |

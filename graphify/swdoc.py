@@ -129,6 +129,32 @@ class _Model:
     def edge(self, src, tgt, rels):
         return next((e for e in self.out[src] if e["target"] == tgt and e.get("relation") in rels), None)
 
+    def call_sequence(self, f) -> list:
+        """[(callee id, line, context)] of the calls in the body of f in execution order (empty for graphs
+        extracted before the order was recorded). Context: '' always, 'if', 'else', 'loop', 'switch', '?:', '&&', '||'."""
+        seq = self.meta(f).get("call_sequence")
+        if not isinstance(seq, list):
+            return []
+        known = set(self.targets(f, CALL, ("function",)))
+        return [(x["id"], x.get("line", 0), x.get("ctx", "")) for x in seq
+                if isinstance(x, dict) and x.get("id") in known]
+
+    def reach(self, f, limit: int = 100000) -> int:
+        """Number of distinct functions f calls directly or indirectly."""
+        adj = getattr(self, "_cadj", None)
+        if adj is None:
+            adj = self._cadj = defaultdict(set)
+            for e in self.edges:
+                if e.get("relation") in CALL and e.get("source") in self.nodes and e.get("target") in self.nodes:
+                    adj[e["source"]].add(e["target"])
+        seen, todo = {f}, [f]
+        while todo and len(seen) < limit:
+            for t in adj.get(todo.pop(), ()):
+                if t not in seen:
+                    seen.add(t)
+                    todo.append(t)
+        return len(seen) - 1
+
     def doxygen(self, i) -> str:
         from graphify.comments import fix_mojibake
         return fix_mojibake(str(self.meta(i).get("doxygen") or ""))
@@ -171,6 +197,34 @@ class _Ctx:
     def many(self, ids: list, limit: int = 8) -> str:
         shown = ", ".join(self.link(i) for i in ids[:limit])
         return shown + (f" +{len(ids) - limit} more" if len(ids) > limit else "")
+
+
+CTX_TEXT = {"if": "if", "else": "else", "loop": "repeated (loop)", "switch": "switch", "?:": "?: (one of two)",
+            "&&": "only if the left side is true (&&)", "||": "only if the left side is false (||)"}
+
+
+def _ctx_text(ctx: str) -> str:
+    parts = [CTX_TEXT.get(x, x) for x in ctx.split(" > ") if x]
+    return " > ".join(parts)
+
+
+def call_sequence_lines(c: "_Ctx", f, limit: int = 80) -> list:
+    """Numbered list of the calls of f in execution order, conditional / repeated calls marked."""
+    seq = c.M.call_sequence(f)
+    if not seq:
+        return []
+    out = []
+    for n, (cid, line, ctx) in enumerate(seq[:limit], 1):
+        out.append(f"{n}. {c.link(cid)} `L{line}`" + (f" - *{_ctx_text(ctx)}*" if ctx else ""))
+    if len(seq) > limit:
+        out.append(f"*+{len(seq) - limit} more calls*")
+    return out + [""]
+
+
+def start_points(M: "_Model", funcs: list) -> list:
+    """Functions of the scope that no function in the code calls: tasks, init, interrupts, diagnostics, or dead code."""
+    called = {e["target"] for e in M.edges if e.get("relation") in CALL and e.get("source") != e.get("target")}
+    return [f for f in funcs if f not in called]
 
 
 def _doc_section(c: _Ctx, i: int) -> list:
@@ -348,7 +402,8 @@ def function_note(c: _Ctx, f: str) -> str:
     if writes:
         out += ["#### Variables written", ""] + _table(SIGNAL_HEAD, [_signal_row(c, v) for v in writes[:MAX_ROWS]])
     if callees:
-        out += ["#### Calls", "", c.many(callees, 20), ""]
+        seq = call_sequence_lines(c, f)
+        out += (["#### Calls (in execution order)", ""] + seq) if seq else ["#### Calls", "", c.many(callees, 20), ""]
     if not writes and not callees:
         out += ["*(writes no variable, calls nothing)*", ""]
 
@@ -663,6 +718,12 @@ def module_note(c: _Ctx, funcs: list, vars_: list, cals: list, border: list, ins
     out += [f"# {c.module}", "", f"[[_HOME]] · {len(funcs)} functions · {len(vars_)} variables · {len(cals)} calibrations", ""]
     sig = component_signals(M, funcs, vars_)
     nin, nout = len(sig["inputs"]), len(sig["outputs"])
+    sp = start_points(M, funcs)
+    out += ["## Start points", "", "Functions of this component that no function in the code calls (tasks, init, interrupts, diagnostics - or unused code).", ""]
+    out += (_table(["Function", "Summary", "Calls", "Reaches"],
+                   [[c.link(f), _esc(_short(M.doc_summary(f), 100)), len(M.targets(f, CALL, ("function",))), f"{M.reach(f)} functions"]
+                    for f in sorted(sp, key=lambda x: M.label(x).lower())[:MAX_ROWS]])
+            if sp else ["*none - every function is called from somewhere*", ""])
     out += ["## Call flow", "", "Arrow = calls. A function block opens its note (click it in reading view). Boxes with rounded ends are other components (callers on the left, callees on the right).", ""]
     out += call_flow(c, funcs) + [""]
     out += ["## Component signals", "", f"{nin} inputs (from other components) · {nout} outputs (read by other components)", ""]
