@@ -70,6 +70,7 @@ class ClangConfig:
     compile_commands: str | None = None  # path to compile_commands.json
     libclang: str | None = None  # path to libclang shared library (optional)
     a2l: str | None = None  # path to the .a2l calibration file (optional)
+    dbc: str | None = None  # path to the CAN matrix (.dbc); adds can_message / can_signal nodes
     par: str | None = None  # path to a .par parameter-value file (optional; needs a2l for the coverage report)
     par_name: str | None = None  # dataset name for the .par (default: file name)
     scope: list = field(default_factory=list)  # substrings; limits ADDED clang-only nodes
@@ -104,7 +105,7 @@ def set_runtime_config(**kwargs) -> None:
 
 def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
     cfg = ClangConfig(base_dir=str(base_dir))
-    for key in ("enabled", "compile_commands", "libclang", "a2l", "par", "par_name", "debug", "header_declarations", "parse_comments"):
+    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "par", "par_name", "debug", "header_declarations", "parse_comments"):
         if key in data:
             setattr(cfg, key, data[key])
     if "extractor" in data:
@@ -130,7 +131,7 @@ def _override() -> dict:
 
 def _apply_override(cfg: ClangConfig, ov: dict) -> ClangConfig:
     """CLI/env wins over the config file; absolute paths from the CLI need no base_dir."""
-    for key in ("compile_commands", "libclang", "a2l", "par", "par_name", "extractor", "debug"):
+    for key in ("compile_commands", "libclang", "a2l", "dbc", "par", "par_name", "extractor", "debug"):
         if key in ov:
             setattr(cfg, key, ov[key])
     if "enabled" in ov:
@@ -2007,6 +2008,28 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
                 LOG.debug("code calibration fields with NO A2L match: %s", stats["a2l"]["unmatched_code"])
             if stats["a2l"].get("unmatched_a2l"):
                 LOG.debug("A2L characteristics NOT matched by any code symbol: %s", stats["a2l"]["unmatched_a2l"])
+
+    dbc_path = cfg.resolve(cfg.dbc)
+    if dbc_path is not None:
+        if not dbc_path.is_file():
+            _warn_once("nodbc", f"DBC file not found: {dbc_path}")
+            LOG.error("DBC file not found: %s", dbc_path)
+        else:
+            try:
+                from graphify.extractors.dbc import join_dbc, scan_dbc
+                try:
+                    rel = dbc_path.resolve().relative_to(root).as_posix()
+                except ValueError:
+                    rel = str(dbc_path.resolve())
+                dbc_parsed = scan_dbc(str(dbc_path))
+                stats["dbc"] = join_dbc(all_nodes, all_edges, dbc_parsed, rel)
+                LOG.info("DBC: %s", {k: v for k, v in stats["dbc"].items() if not isinstance(v, list)})
+                if stats["dbc"]["overlaps"]:
+                    _warn_once("dbcoverlap", f"DBC: {len(stats['dbc']['overlaps'])} overlapping signal(s), e.g. {stats['dbc']['overlaps'][0]}")
+                print(f"[graphify] DBC: {stats['dbc']['messages']} messages, {stats['dbc']['signals']} signals", file=sys.stderr)
+            except Exception as exc:  # never break the extraction for the CAN step
+                _warn_once("dbcfail", f"DBC step failed: {exc}")
+                LOG.exception("DBC step failed")
 
     par_path = cfg.resolve(cfg.par)
     if par_path is not None:

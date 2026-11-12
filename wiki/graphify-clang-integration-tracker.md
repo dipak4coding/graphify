@@ -586,3 +586,16 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | HTML | function page: ordered call list and a lazy "Execution trace" tree (open a call to see what it calls; recursion marked); home page: Start points table sorted by reach |
 | Limits | this is the code order, not a real run: all branches are shown. The order between tasks / cycle times is not in the code (needs the scheduler table). Calls through function pointers are not in the sequence |
 | Not built yet | data order (which function must run before another, from write -> read links); task table import |
+
+## 53. CAN matrix (DBC) extractor
+
+| Item | Detail |
+|---|---|
+| Module | `graphify/extractors/dbc.py`: `scan_dbc` (parse with `cantools`, utf-8 then cp1252) and `join_dbc` (graph nodes). Same shape as the A2L extractor |
+| Switch | `--dbc <file>` on `graphify extract`, or `dbc` in the clang config; runs in the clang pass after A2L; a failing DBC never breaks the extraction (warning only) |
+| Nodes | `can_message` (frame id, hex, extended, dlc, senders, cycle time, signal count) and `can_signal` (message, start bit, length, byte order, factor, offset, min, max, unit, enum, receivers, multiplex). DBC comments go to `rationale` |
+| Edges | `can_has_signal` message -> signal |
+| Bit layout | every signal has `bits` = physical bit positions (byte*8+bit, LSB first) for Intel and Motorola. Test checks the Motorola layout against cantools' own decoder, so the DBC side is verified |
+| Checks | overlapping signals inside one message are reported (muxed siblings are not overlaps); signal names used in several messages are listed in the stats |
+| Not built yet | the code side: getter calls (`BilSig_Get_Signal_*(IDX, &var)`), config table rows, macro chain, join signal index -> DBC signal, CSV/JSON/diagnostics, display in notes/HTML. The bit convention of the config table is still unverified and needs real rows |
+| Tests | `tests/test_dbc.py` (5): layout, fields, enum, comment, graph join, idempotence, overlap |
