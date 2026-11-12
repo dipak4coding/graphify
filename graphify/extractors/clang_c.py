@@ -70,6 +70,7 @@ class ClangConfig:
     compile_commands: str | None = None  # path to compile_commands.json
     libclang: str | None = None  # path to libclang shared library (optional)
     a2l: str | None = None  # path to the .a2l calibration file (optional)
+    dbc_node: str = "TCU"  # ECU of the DBC: only its TX/RX messages are added ("" or "*" = whole bus)
     dbc: str | None = None  # path to the CAN matrix (.dbc); adds can_message / can_signal nodes
     par: str | None = None  # path to a .par parameter-value file (optional; needs a2l for the coverage report)
     par_name: str | None = None  # dataset name for the .par (default: file name)
@@ -105,7 +106,7 @@ def set_runtime_config(**kwargs) -> None:
 
 def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
     cfg = ClangConfig(base_dir=str(base_dir))
-    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "par", "par_name", "debug", "header_declarations", "parse_comments"):
+    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "par", "par_name", "debug", "header_declarations", "parse_comments"):
         if key in data:
             setattr(cfg, key, data[key])
     if "extractor" in data:
@@ -131,7 +132,7 @@ def _override() -> dict:
 
 def _apply_override(cfg: ClangConfig, ov: dict) -> ClangConfig:
     """CLI/env wins over the config file; absolute paths from the CLI need no base_dir."""
-    for key in ("compile_commands", "libclang", "a2l", "dbc", "par", "par_name", "extractor", "debug"):
+    for key in ("compile_commands", "libclang", "a2l", "dbc", "dbc_node", "par", "par_name", "extractor", "debug"):
         if key in ov:
             setattr(cfg, key, ov[key])
     if "enabled" in ov:
@@ -2021,8 +2022,12 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
                     rel = dbc_path.resolve().relative_to(root).as_posix()
                 except ValueError:
                     rel = str(dbc_path.resolve())
-                dbc_parsed = scan_dbc(str(dbc_path))
-                stats["dbc"] = join_dbc(all_nodes, all_edges, dbc_parsed, rel)
+                ecu = "" if cfg.dbc_node in ("", "*") else cfg.dbc_node
+                dbc_parsed = scan_dbc(str(dbc_path), ecu)
+                if ecu and ecu not in dbc_parsed["nodes"]:
+                    _warn_once("dbcnode", f"DBC: ECU '{ecu}' not in the DBC (nodes: {', '.join(dbc_parsed['nodes'][:12])}); whole bus is used")
+                    dbc_parsed["node"] = ecu = ""
+                stats["dbc"] = join_dbc(all_nodes, all_edges, dbc_parsed, rel, node_filter=bool(ecu))
                 LOG.info("DBC: %s", {k: v for k, v in stats["dbc"].items() if not isinstance(v, list)})
                 if stats["dbc"]["overlaps"]:
                     _warn_once("dbcoverlap", f"DBC: {len(stats['dbc']['overlaps'])} overlapping signal(s), e.g. {stats['dbc']['overlaps'][0]}")

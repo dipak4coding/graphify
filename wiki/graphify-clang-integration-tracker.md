@@ -592,10 +592,11 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Item | Detail |
 |---|---|
 | Module | `graphify/extractors/dbc.py`: `scan_dbc` (parse with `cantools`, utf-8 then cp1252) and `join_dbc` (graph nodes). Same shape as the A2L extractor |
-| Switch | `--dbc <file>` on `graphify extract`, or `dbc` in the clang config; runs in the clang pass after A2L; a failing DBC never breaks the extraction (warning only) |
+| Switch | `--dbc <file>` and `--dbc-node <ECU>` (default `TCU`; `*` or empty = whole bus) on `graphify extract`, or `dbc` / `dbc_node` in the clang config; runs in the clang pass after A2L; a failing DBC never breaks the extraction (warning only) |
 | Nodes | `can_message` (frame id, hex, extended, dlc, senders, cycle time, signal count) and `can_signal` (message, start bit, length, byte order, factor, offset, min, max, unit, enum, receivers, multiplex). DBC comments go to `rationale` |
-| Edges | `can_has_signal` message -> signal |
+| ECU filter | design merged from the user's `dbc_extractor.py`: direction per message TX (ECU sends) / RX (ECU receives a signal) / `-` (unrelated, skipped when filtering); nodes `can_dbc`, `can_node` (ECU + senders); edges `defined_in`, `sends` (ECU -> message), `has_signal` (message -> signal), `receives` (ECU -> signal); BA_ attributes stored as `attr:<name>`; `node_kind` (CanDbc / CanNode / CanMessage / CanSignal) kept next to `type` for the old merge script. Unknown ECU name: warning, whole bus is used |
+| Differences | `dbc_compare.py` (msg_info / sig_info) is NOT used (file not available here): the fields are read directly with cantools; ids are `can_<dbc>_msg_<name>` / `can_<dbc>_sig_<msg>_<sig>`; added: `bits` (verified layout), overlap check, enum under `metadata.enum`. Not taken over: openpyxl compare/report |
 | Bit layout | every signal has `bits` = physical bit positions (byte*8+bit, LSB first) for Intel and Motorola. Test checks the Motorola layout against cantools' own decoder, so the DBC side is verified |
 | Checks | overlapping signals inside one message are reported (muxed siblings are not overlaps); signal names used in several messages are listed in the stats |
 | Not built yet | the code side: getter calls (`BilSig_Get_Signal_*(IDX, &var)`), config table rows, macro chain, join signal index -> DBC signal, CSV/JSON/diagnostics, display in notes/HTML. The bit convention of the config table is still unverified and needs real rows |
-| Tests | `tests/test_dbc.py` (5): layout, fields, enum, comment, graph join, idempotence, overlap |
+| Tests | `tests/test_dbc.py` (6): layout, fields, enum, comment, graph join, idempotence, overlap |

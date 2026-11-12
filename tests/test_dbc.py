@@ -11,15 +11,23 @@ NS_ :
 
 BS_:
 
-BU_: ESP GW
+BU_: ESP GW TCU
+
 
 BO_ 1648 ESP_21: 8 ESP
  SG_ ESP_Speed : 16|16@1+ (0.01,0) [0|655] "km/h" GW
  SG_ ESP_Flag : 0|1@1+ (1,0) [0|1] "" GW
- SG_ ESP_Mode : 1|3@1+ (1,0) [0|7] "" GW
+ SG_ ESP_Mode : 1|3@1+ (1,0) [0|7] "" GW,TCU
 BO_ 304 MO_Msg: 8 GW
  SG_ MO_Torque : 7|12@0+ (0.5,-10) [-10|2038] "Nm" ESP
  SG_ MO_Gear : 27|4@0+ (1,0) [0|15] "" ESP
+BO_ 500 TCU_Msg: 8 TCU
+ SG_ TCU_Gear : 0|4@1+ (1,0) [0|15] "" GW
+BO_ 600 Other_Msg: 8 GW
+ SG_ Oth : 0|8@1+ (1,0) [0|255] "" ESP
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_ "GenMsgCycleTime" BO_ 1648 20;
 CM_ SG_ 1648 ESP_Speed "Vehicle speed";
 VAL_ 1648 ESP_Mode 0 "Off" 1 "On" 2 "Error";
 '''
@@ -68,15 +76,31 @@ def test_scan_fields(dbc_file):
     assert mode["choices"] == {0: "Off", 1: "On", 2: "Error"}
 
 
-def test_join_nodes_edges(dbc_file):
+def test_join_whole_bus(dbc_file):
     nodes, edges = [], []
     st = join_dbc(nodes, edges, scan_dbc(dbc_file), "t.dbc")
-    assert st["messages"] == 2 and st["signals"] == 5 and not st["overlaps"]
+    assert st["messages"] == 4 and st["signals"] == 7 and not st["overlaps"]
     sig = next(n for n in nodes if n["label"] == "MO_Torque")
     assert sig["type"] == "can_signal" and sig["metadata"]["message"] == "MO_Msg" and sig["metadata"]["unit"] == "Nm"
-    assert sum(e["relation"] == "can_has_signal" for e in edges) == 5
-    # idempotent
-    assert join_dbc(nodes, edges, scan_dbc(dbc_file), "t.dbc")["signals"] == 0
+    assert sum(e["relation"] == "has_signal" for e in edges) == 7
+    assert join_dbc(nodes, edges, scan_dbc(dbc_file), "t.dbc")["signals"] == 0    # idempotent
+
+
+def test_ecu_filter_direction_attrs(dbc_file):
+    d = scan_dbc(dbc_file, "TCU")
+    assert {m: v["direction"] for m, v in d["messages"].items()} == {
+        "ESP_21": "RX", "MO_Msg": "-", "TCU_Msg": "TX", "Other_Msg": "-"}
+    nodes, edges = [], []
+    st = join_dbc(nodes, edges, d, "t.dbc")
+    msgs = {n["label"] for n in nodes if n["type"] == "can_message"}
+    assert msgs == {"ESP_21", "TCU_Msg"} and (st["TX"], st["RX"], st["unrelated"]) == (1, 1, 2)
+    assert {n["type"] for n in nodes} >= {"can_dbc", "can_node", "can_message", "can_signal"}
+    rel = {(e["relation"]) for e in edges}
+    assert {"defined_in", "sends", "has_signal", "receives"} <= rel
+    recv = [e for e in edges if e["relation"] == "receives"]
+    assert len(recv) == 1 and recv[0]["target"].endswith("esp_mode")          # only the signal TCU receives
+    esp = next(n for n in nodes if n["label"] == "ESP_21")
+    assert esp["metadata"]["attr:GenMsgCycleTime"] == 20 and esp["metadata"]["node_kind"] == "CanMessage"
 
 
 def test_overlap_reported(tmp_path):
