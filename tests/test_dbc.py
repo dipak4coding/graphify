@@ -108,3 +108,42 @@ def test_overlap_reported(tmp_path):
     p.write_text(DBC.replace("1|3@1+", "0|3@1+"), encoding="utf-8")
     st = join_dbc([], [], scan_dbc(str(p)), "o.dbc")
     assert st["overlaps"]
+
+
+# ---- CAN chapter in the documentation (Obsidian, single file, html)
+
+def _graph_raw(dbc_file, ecu="TCU"):
+    nodes = [{"id": "f1", "label": "Kku_F()", "type": "function", "source_file": "ku/kku/kku.c", "metadata": {}}]
+    edges = []
+    join_dbc(nodes, edges, scan_dbc(dbc_file, ecu), "t.dbc", node_filter=bool(ecu))
+    return {"nodes": nodes, "edges": edges}
+
+
+def test_can_notes_and_single_file(dbc_file):
+    from graphify.swdoc import build_vault, can_notes, single_file
+    res = build_vault(_graph_raw(dbc_file), ["ku/kku"])
+    assert res["can"]["ecu"] == "TCU" and [m["name"] for m in res["can"]["messages"]] == ["TCU_Msg", "ESP_21"]   # TX first
+    notes = can_notes(res["can"])
+    assert set(notes) == {"can/CAN.md", "can/messages/ESP_21.md", "can/messages/TCU_Msg.md"}
+    esp = notes["can/messages/ESP_21.md"]
+    assert "`0x670`" in esp and "0=Off; 1=On; 2=Error" in esp and "**TCU**" in esp and "km/h" in esp and "0.01 · 0" in esp
+    assert "[[ESP_21]]" in notes["can/CAN.md"] and "Received by the ECU (RX)" in notes["can/CAN.md"]
+    text = single_file(res)
+    assert "## CAN messages" in text and "### ESP_21" in text and "[[#ESP_21]]" in text and "[[CAN]]" not in text
+
+
+def test_can_html(dbc_file):
+    from graphify.swdoc import build_vault
+    from graphify.swdoc_html import build_data, render
+    res = build_vault(_graph_raw(dbc_file), ["ku/kku"], want_notes=False)
+    d = build_data(res, "T")
+    assert [m["n"] for m in d["can"]["m"]] == ["TCU_Msg", "ESP_21"]
+    html = render(d)
+    assert "pageCan" in html and "ESP_Mode" in html
+
+
+def test_no_dbc_no_can_chapter():
+    from graphify.swdoc import build_vault, single_file
+    raw = {"nodes": [{"id": "f1", "label": "F()", "type": "function", "source_file": "a/a.c", "metadata": {}}], "edges": []}
+    res = build_vault(raw, ["a"])
+    assert res["can"] is None and "CAN" not in single_file(res)

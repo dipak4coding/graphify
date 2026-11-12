@@ -600,3 +600,14 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Checks | overlapping signals inside one message are reported (muxed siblings are not overlaps); signal names used in several messages are listed in the stats |
 | Not built yet | the code side: getter calls (`BilSig_Get_Signal_*(IDX, &var)`), config table rows, macro chain, join signal index -> DBC signal, CSV/JSON/diagnostics, display in notes/HTML. The bit convention of the config table is still unverified and needs real rows |
 | Tests | `tests/test_dbc.py` (6): layout, fields, enum, comment, graph join, idempotence, overlap |
+
+## 54. CAN chapter in the documentation (Obsidian, single file, HTML)
+
+| Item | Detail |
+|---|---|
+| Data | `swdoc.can_data(M)`: messages (frame id, DLC, cycle, direction, senders, attributes) with their signals (start bit, length, byte order, range, factor, offset, unit, enum, receivers, mux). One function feeds all three outputs; `None` when the graph has no `can_message` node (nothing changes then) |
+| Obsidian | `can/CAN.md` (index: TX / RX / other, with frame id, DLC, cycle, sender, signal count) and one page per message `can/messages/<name>.md` with the signal table (Name, Description, Start bit · Length · Order, Range, Factor · Offset, Unit, Value / enum table, Receivers; the ECU is bold). Linked from `_HOME`. Written in every export, kept under the module name `CAN` (module `--prune` does not touch it) |
+| Single file | section "## CAN messages" (index + one heading per message), listed in the contents |
+| HTML | home page link, sidebar entry "CAN messages", page `#can` (index) and `#m/<n>` (message), search finds messages by message / signal name and DBC comment |
+| Not in the documentation yet | link between a CAN signal and the C variable / function (needs the mapping, paused); no page per signal (the message page has the full table) |
+| Tests | `tests/test_dbc.py` +3 (notes, single file, html, no-DBC case); HTML checked in a browser (no JS errors) |
