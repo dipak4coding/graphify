@@ -1064,7 +1064,7 @@ def _reenter_main() -> None:
 def _consume_clang_flags() -> None:
     """Strip --clang / --compile-commands X / --a2l X / --libclang X from sys.argv and
     hand them to the optional clang pass (see graphify/extractors/clang_c.py)."""
-    value_flags = {"--compile-commands": "compile_commands", "--a2l": "a2l", "--dbc": "dbc", "--dbc-node": "dbc_node", "--libclang": "libclang", "--par": "par"}
+    value_flags = {"--compile-commands": "compile_commands", "--a2l": "a2l", "--dbc": "dbc", "--libclang": "libclang", "--par": "par"}
     opts: dict = {}
     rest = [sys.argv[0]]
     args = sys.argv[1:]
@@ -1104,6 +1104,15 @@ def _consume_clang_flags() -> None:
                 sys.exit(2)
             opts[value_flags[name]] = str(Path(val).resolve())
             opts["enabled"] = True
+        elif name == "--dbc-node":
+            if eq:
+                opts["dbc_node"] = inline
+            elif i + 1 < len(args):
+                i += 1
+                opts["dbc_node"] = args[i]
+            else:
+                print("error: --dbc-node needs an ECU name (or * for the whole bus)", file=sys.stderr)
+                sys.exit(2)
         elif name == "--par-name":
             if eq:
                 opts["par_name"] = inline
