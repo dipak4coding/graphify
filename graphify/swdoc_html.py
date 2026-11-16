@@ -75,8 +75,8 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
             touched |= set(M.targets(f, READ | WRITE, ("variable",))) - plumbing
         sig = S.component_signals(M, fs, sorted(touched))
         comps.append({"n": g, "f": ids(fs),
-                      "in": [[idx[v], ids(d["outside"]), 1 if d["external"] else 0] for v, d in sorted(sig["inputs"].items(), key=lambda kv: M.label(kv[0]).lower()) if v in idx],
-                      "out": [[idx[v], ids(d["outside"])] for v, d in sorted(sig["outputs"].items(), key=lambda kv: M.label(kv[0]).lower()) if v in idx]})
+                      "in": [[idx[v], ids(d["inside"]), 0] for v, d in sorted(sig["inputs"].items(), key=lambda kv: M.label(kv[0]).lower()) if v in idx],
+                      "out": [[idx[v], ids(d["inside"])] for v, d in sorted(sig["outputs"].items(), key=lambda kv: M.label(kv[0]).lower()) if v in idx]})
 
     def acc(f, rels, kinds):
         out = []
@@ -339,8 +339,8 @@ function pageComp(k){
  const ded=[...new Set(edges.map(e=>e.join('>')))].map(s=>s.split('>'));
  h+=nodes.length<=MAXFLOW?flow(nodes,ded)+`<p class="mut">Box = function (click to open) &middot; rounded grey = other component &middot; arrow = calls &middot; dashed = recursion / cycle.</p>`:`<div class="warn">${nodes.length} blocks: too many to draw, see the function table.</div>`;
  const sg=a=>a.map(([v,o,e])=>[A(v),...[]]);
- if(c.in.length)h+=`<h3>Component inputs</h3>`+sigTable(c.in.map(r=>r[0]),{head:['Written outside by'],row:id=>{const r=c.in.find(q=>q[0]===id);return [r[2]?'<span class="mut">external input (no writer in the code)</span>':list(r[1],4)]}});
- if(c.out.length)h+=`<h3>Component outputs</h3>`+sigTable(c.out.map(r=>r[0]),{head:['Read outside by'],row:id=>[list(c.out.find(q=>q[0]===id)[1],4)]});
+ if(c.in.length)h+=`<h3>Component inputs</h3>`+sigTable(c.in.map(r=>r[0]),{head:['Read inside by'],row:id=>[list(c.in.find(q=>q[0]===id)[1],4)]});
+ if(c.out.length)h+=`<h3>Component outputs</h3>`+sigTable(c.out.map(r=>r[0]),{head:['Written inside by'],row:id=>[list(c.out.find(q=>q[0]===id)[1],4)]});
  const cal=[...new Set(c.f.flatMap(i=>IT[i].ca))];
  if(cal.length)h+=`<h3>Calibrations</h3>`+sigTable(cal,{head:['Read by'],row:id=>[list(c.f.filter(f=>IT[f].ca.includes(id)),4)]});
  h+=`<h3>Functions</h3>`+table(['Function','Summary','Calls','Reads','Writes'],c.f.map(i=>{const x=IT[i];return [A(i),esc(x.s||''),x.cl.length,x.rd.length+x.ca.length,x.wr.length]}));

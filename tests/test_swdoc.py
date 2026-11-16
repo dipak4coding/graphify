@@ -241,8 +241,12 @@ def test_module_note_call_flow_signal_tables_and_calibrations():
     assert "Signal matrix" not in note and "Local signals" not in note
     for gone in ("Inputs from other modules", "Variables read outside this module", "connected", "## Interface"):
         assert gone not in note
-    assert "### Component inputs" in note and "| [[Kku_T_Oel]] |" in note and "[[Vwh_Oel]]" in note
-    assert "### Component outputs" in note and "[[Kue_Stelle]]" in note
+    ins = note.split("### Component inputs")[1].split("### Component outputs")[0]
+    outs = note.split("### Component outputs")[1].split("## ")[0]
+    assert "| [[Kku_T_Oel]] |" in ins and ins.splitlines()[2].rstrip().endswith("| Read inside by |")
+    assert outs.splitlines()[2].rstrip().endswith("| Written inside by |")
+    assert "[[Kku_Calc]]" in ins and "[[Kku_Calc]]" in outs                      # the functions of THIS component
+    assert "[[Vwh_Oel]]" not in ins and "[[Kue_Stelle]]" not in outs             # the other side is not in these tables any more
     cal = note.split("## Calibrations")[1].split("## ")[0]
     assert "| Name | Description | Range | Value / enum table | Unit | Read by |" in cal
     assert "| [[KkuAppROM.SW_T_Oel]]<br>`Kku_SW_T_Oel` | Schwelle | 0.0 … 150.0 | **95 degC** |" in cal

@@ -635,3 +635,12 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Single file | signal pages are headings too (`### <signal>`), links resolve inside the file |
 | Known quirk | "Read by" of a signal also lists the reader function (`Sic_HolenSignale`) when the getter is only declared (not defined) in the parsed files: the out-parameter analysis then falls back to "read". With the real getter definition the function shows as writer |
 | Tests | `tests/test_can_map.py` +2 |
+
+## 57. Component signal tables: inside columns
+
+| Item | Detail |
+|---|---|
+| Change | "Component inputs": last column is now **Read inside by** (functions of this component that read the input); "Component outputs": **Written inside by** (functions of this component that write the output). Was: Written outside by / Read outside by. Obsidian module note, single file and HTML component page |
+| Why | The tables describe the component; the user wants the internal side and a clean, short table. The other side (who writes an input / reads an output) stays on the variable page |
+| Lost on purpose | the note "external input (no writer in the code)" in the input table; the variable page still says "no writer found" |
+| Data | `component_signals` already had `inside` and `outside`; only the columns changed |

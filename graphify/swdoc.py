@@ -740,12 +740,12 @@ def module_note(c: _Ctx, funcs: list, vars_: list, cals: list, border: list, ins
     out += call_flow(c, funcs) + [""]
     out += ["## Component signals", "", f"{nin} inputs (from other components) · {nout} outputs (read by other components)", ""]
     if sig["inputs"]:
-        out += ["### Component inputs", ""] + _table(SIGNAL_HEAD + ["Written outside by"],
-            [_signal_row(c, v) + [_raw(_partner(c, sig["inputs"][v]["outside"], sig["inputs"][v]["external"]))]
+        out += ["### Component inputs", ""] + _table(SIGNAL_HEAD + ["Read inside by"],
+            [_signal_row(c, v) + [_raw(_partner(c, sig["inputs"][v]["inside"]))]
              for v in sorted(sig["inputs"], key=lambda x: M.label(x).lower())[:MAX_ROWS]])
     if sig["outputs"]:
-        out += ["### Component outputs", ""] + _table(SIGNAL_HEAD + ["Read outside by"],
-            [_signal_row(c, v) + [_raw(_partner(c, sig["outputs"][v]["outside"]))]
+        out += ["### Component outputs", ""] + _table(SIGNAL_HEAD + ["Written inside by"],
+            [_signal_row(c, v) + [_raw(_partner(c, sig["outputs"][v]["inside"]))]
              for v in sorted(sig["outputs"], key=lambda x: M.label(x).lower())[:MAX_ROWS]])
     if cals:
         out += ["## Calibrations", "", f"{len(cals)} calibrations read by the functions of this component.", ""] + _table(
