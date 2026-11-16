@@ -71,6 +71,8 @@ class ClangConfig:
     libclang: str | None = None  # path to libclang shared library (optional)
     a2l: str | None = None  # path to the .a2l calibration file (optional)
     dbc_node: str = "TCU"  # ECU of the DBC: only its TX/RX messages are added ("" or "*" = whole bus)
+    can_table: str = "BilSig_Data_CfgSig_ci"  # array of signal config structs (first member = signal index, trailing // comment = CAN signal name)
+    can_reader: str = "Sic_HolenSignale"      # function whose body calls the getters getter(index, &variable)
     dbc: str | None = None  # path to the CAN matrix (.dbc); adds can_message / can_signal nodes
     par: str | None = None  # path to a .par parameter-value file (optional; needs a2l for the coverage report)
     par_name: str | None = None  # dataset name for the .par (default: file name)
@@ -106,7 +108,7 @@ def set_runtime_config(**kwargs) -> None:
 
 def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
     cfg = ClangConfig(base_dir=str(base_dir))
-    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "par", "par_name", "debug", "header_declarations", "parse_comments"):
+    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "par", "par_name", "debug", "header_declarations", "parse_comments"):
         if key in data:
             setattr(cfg, key, data[key])
     if "extractor" in data:
@@ -132,7 +134,7 @@ def _override() -> dict:
 
 def _apply_override(cfg: ClangConfig, ov: dict) -> ClangConfig:
     """CLI/env wins over the config file; absolute paths from the CLI need no base_dir."""
-    for key in ("compile_commands", "libclang", "a2l", "dbc", "dbc_node", "par", "par_name", "extractor", "debug"):
+    for key in ("compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "par", "par_name", "extractor", "debug"):
         if key in ov:
             setattr(cfg, key, ov[key])
     if "enabled" in ov:
@@ -444,6 +446,8 @@ class ClangExtractor:
         self._cur_fn_id = None
         self._cur_params: dict = {}       # (name, line, col) of a pointer PARM_DECL -> parameter index
         self.ptr_to_rom: dict = {}
+        self.can_rows: list = []          # config table rows: {index, name, file, line}
+        self.can_calls: list = []         # getter calls in the reader function: {index, var, getter, file, line}
         self._leaf_cache: dict = {}
         self._leaf_docs: dict = {}      # struct type spelling -> {relative member path: raw doxygen comment}
         self.ptr_maps: dict = {}  # rel file -> {ptr: rom} (for the incremental cache)
@@ -796,6 +800,114 @@ class ClangExtractor:
         toks = [t for t in cursor.get_tokens()
                 if t.extent.start.offset >= lhs.extent.end.offset and t.extent.end.offset <= rhs.extent.start.offset]
         return "".join(t.spelling for t in toks)
+
+    # ---- CAN signal configuration (table + getter calls) -------------------------------
+
+    @staticmethod
+    def _trailing_comment(lines: list, start_line: int, end_line: int, end_col: int) -> str:
+        """Text of the comment after the closing brace of a table row (`}, // name`), else any comment on its lines."""
+        def cut(txt: str) -> str:
+            m = re.search(r"//(.*)$", txt)
+            if m:
+                txt = m.group(1)
+            else:
+                m = re.search(r"/\*(.*?)\*/", txt)
+                if not m:
+                    return ""
+                txt = m.group(1)
+            return txt.split("//")[0].strip(" \t*/")
+        if 1 <= end_line <= len(lines):
+            c = cut(lines[end_line - 1][max(end_col - 1, 0):])
+            if c:
+                return c
+        for ln in range(end_line, start_line - 1, -1):
+            if 1 <= ln <= len(lines):
+                c = cut(lines[ln - 1])
+                if c:
+                    return c
+        return ""
+
+    def _can_scan(self, tu, sfile: str) -> None:
+        """The configured table (rows: first member = signal index, trailing comment = CAN signal name) and the
+        getter calls `getter(<index>, &<variable>)` inside the configured reader function."""
+        K, cfg = self.K, self.cfg
+        table, reader = cfg.can_table, cfg.can_reader
+        lines = None
+        for top in tu.cursor.get_children():
+            loc = top.location
+            if not loc.file or str(loc.file) != str(sfile):
+                continue
+            if top.kind == K.VAR_DECL and top.spelling == table and top.is_definition():
+                if lines is None:
+                    lines = Path(sfile).read_text(encoding="latin-1", errors="replace").split("\n")
+                init = next((c for c in top.get_children() if c.kind in (K.INIT_LIST_EXPR, K.UNEXPOSED_EXPR)), None)
+                init = self._peel(init) if init is not None else None
+                if init is None or init.kind != K.INIT_LIST_EXPR:
+                    continue
+                for row in init.get_children():
+                    row = self._peel(row)
+                    if row.kind != K.INIT_LIST_EXPR:
+                        continue
+                    kids = list(row.get_children())
+                    idx = self._const_int(kids[0]) if kids else None
+                    name = self._trailing_comment(lines, row.extent.start.line, row.extent.end.line, row.extent.end.column)
+                    first = " ".join(t.spelling for t in kids[0].get_tokens()) if kids else ""
+                    self.can_rows.append({"index": idx, "first": first, "name": name, "file": self.sf(sfile),
+                                          "line": row.extent.start.line})
+            elif top.kind == K.FUNCTION_DECL and top.spelling == reader and top.is_definition():
+                self._can_getters(top, sfile)
+
+    def _can_getters(self, fn, sfile: str) -> None:
+        K = self.K
+        stack = list(fn.get_children())
+        while stack:
+            c = stack.pop()
+            stack.extend(c.get_children())
+            if c.kind != K.CALL_EXPR:
+                continue
+            args = list(c.get_arguments())
+            if len(args) < 2:
+                continue
+            idx = self._const_int(args[0])
+            a = self._peel(args[1])
+            if self._c_op_kind(a, "clang_getCursorUnaryOperatorKind") == _C_UNOP_ADDROF:
+                kids = list(a.get_children())
+                a = self._peel(kids[0]) if kids else a
+            ref, _extras = self._lvalue_root(a)
+            if idx is None or ref is None:
+                if ref is not None or idx is not None:
+                    self.can_calls.append({"index": idx, "var": None, "getter": c.spelling, "file": self.sf(sfile),
+                                           "line": c.location.line, "note": "index not constant" if idx is None else "no variable"})
+                continue
+            self.can_calls.append({"index": idx, "var": self._global_var(ref, sfile),
+                                   "var_name": ref.referenced.spelling, "getter": c.spelling, "file": self.sf(sfile),
+                                   "line": c.location.line})
+
+    def _const_int(self, cursor):
+        """Integer value of a constant expression as clang itself folds it (macros, enums, casts, + - ...)."""
+        try:
+            import ctypes
+            lib = self.ci.conf.lib
+            if not getattr(self, "_eval_ready", False):
+                lib.clang_Cursor_Evaluate.argtypes = [self.ci.Cursor]
+                lib.clang_Cursor_Evaluate.restype = ctypes.c_void_p
+                lib.clang_EvalResult_getKind.argtypes = [ctypes.c_void_p]
+                lib.clang_EvalResult_getKind.restype = ctypes.c_int
+                lib.clang_EvalResult_getAsLongLong.argtypes = [ctypes.c_void_p]
+                lib.clang_EvalResult_getAsLongLong.restype = ctypes.c_longlong
+                lib.clang_EvalResult_dispose.argtypes = [ctypes.c_void_p]
+                lib.clang_EvalResult_dispose.restype = None
+                self._eval_ready = True
+            res = lib.clang_Cursor_Evaluate(cursor)
+            if res:
+                try:
+                    if lib.clang_EvalResult_getKind(res) == 1:        # CXEval_Int
+                        return int(lib.clang_EvalResult_getAsLongLong(res))
+                finally:
+                    lib.clang_EvalResult_dispose(res)
+        except Exception:
+            pass
+        return self._eval_int(cursor)
 
     def _eval_int(self, cursor):
         if cursor.kind in self._pass_pt:
@@ -1597,6 +1709,8 @@ class ClangExtractor:
                 if self._skip(child):
                     continue
                 self.walk(child, None, sfile)
+            if self.cfg.dbc:
+                self._can_scan(tu, sfile)
             rel = self.sf(sfile)
             self.file_info[rel]["nodes_added"] = len(self.nodes) - n0
             self.file_info[rel]["edges_added"] = len(self.edges) - e0
@@ -2035,6 +2149,26 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
             except Exception as exc:  # never break the extraction for the CAN step
                 _warn_once("dbcfail", f"DBC step failed: {exc}")
                 LOG.exception("DBC step failed")
+            if stats.get("dbc") and (ex.can_rows or ex.can_calls):
+                try:
+                    from graphify.can_map import join_can, write_outputs
+                    from graphify.paths import out_path
+                    res = join_can(all_nodes, all_edges, ex.can_rows, ex.can_calls)
+                    outp = out_path()
+                    outp = outp if outp.is_absolute() else root / outp
+                    cp, _jp = write_outputs(res, outp)
+                    stats["can_map"] = res["stats"]
+                    st = res["stats"]
+                    print(f"[graphify] CAN mapping: {st['rows']} table rows, {st['getter_calls']} getter calls, "
+                          f"{st['linked_signals']} DBC signals linked to a variable -> {cp}", file=sys.stderr)
+                    for k in ("rows_not_in_dbc", "rows_without_getter", "getters_without_row", "rows_without_name", "duplicate_index"):
+                        if st[k]:
+                            _warn_once("canmap_" + k, f"CAN mapping: {st[k]} {k.replace('_', ' ')} (see can_mapping.json)")
+                except Exception as exc:
+                    _warn_once("canmapfail", f"CAN mapping step failed: {exc}")
+                    LOG.exception("CAN mapping step failed")
+            elif stats.get("dbc"):
+                LOG.info("CAN mapping: no table '%s' / reader '%s' found in the parsed C files", cfg.can_table, cfg.can_reader)
 
     par_path = cfg.resolve(cfg.par)
     if par_path is not None:

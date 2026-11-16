@@ -611,3 +611,16 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | HTML | home page link, sidebar entry "CAN messages", page `#can` (index) and `#m/<n>` (message), search finds messages by message / signal name and DBC comment |
 | Not in the documentation yet | link between a CAN signal and the C variable / function (needs the mapping, paused); no page per signal (the message page has the full table) |
 | Tests | `tests/test_dbc.py` +3 (notes, single file, html, no-DBC case); HTML checked in a browser (no JS errors) |
+
+## 55. CAN signal -> C variable (simple rule: config table + getter calls)
+
+| Item | Detail |
+|---|---|
+| Rule (decided for now) | DBC signal name = the `// comment` after a row of the table `BilSig_Data_CfgSig_ci[]`; the FIRST member of the row is the signal index (a `#define`, folded by clang); the function `Sic_HolenSignale()` calls a getter per signal `getter(<index>, &<variable>)`; that variable carries the CAN value. Chain: DBC signal -> row comment -> index -> getter call -> variable |
+| Names | `can_table` (default `BilSig_Data_CfgSig_ci`) and `can_reader` (default `Sic_HolenSignale`): in the clang config or `--can-table` / `--can-reader`. Active only with `--dbc` |
+| Extraction | `ClangExtractor._can_scan` / `_can_getters` in `clang_c.py`: rows (index, comment, file, line) and getter calls (index, variable, getter, line). The index is evaluated by libclang itself (`clang_Cursor_Evaluate`): macros, `(A + 1)`, enums, casts. The variable is the root of the 2nd argument: `&v`, `&(v)`, `&arr[i]`, `&s.m`, an array name. The comment: after the closing brace (`}, // name`), a second `//` is cut off, `/* */` works |
+| Join | `graphify/can_map.py` `join_can`: comment -> DBC signal (exact, else ignoring case / separators = `normalized`; same name in several messages = `ambiguous`), index -> getter call(s) -> variable node. Edge `can_signal --carried_in--> variable` with index, getter, lines and match status on the edge (nodes are not merged, like the A2L link) |
+| Outputs | `graphify-out/can_mapping.csv` (`;`-separated, 14 columns: dbc_signal, message, frame_id, direction, config_index, config_comment, config_file, config_line, getter, getter_file, getter_line, variable, variable_file, status) and `can_mapping.json` (stats, diagnostics, mapping). Diagnostics: rows not in the DBC, rows without getter, getters without row, rows without index / name, duplicate index, ambiguous names, getters not resolved, RX signals of the ECU without a row |
+| Documentation | CAN message page: new column "C variable" (link when the variable is in the scope); variable page (Obsidian + HTML): section "CAN signal" with message, signal, unit, enum, signal index, getter |
+| Not covered | the CAN name comes from the comment (confirmed only against the DBC name); no bit position / byte order comparison with the table (the row's other members are ignored); getter loops over arrays (`Sic_Data_CfgSigU8_ci`); getters called outside the reader function; the index of a row that clang cannot fold is listed as `rows_without_index` |
+| Tests | `tests/test_can_map.py` (5): links, files + diagnostics, configurable names, name rules, documentation |

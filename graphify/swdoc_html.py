@@ -179,8 +179,14 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
             {"n": m["name"], "h": m["hex"], "l": m["dlc"], "y": m["cycle"], "d": m["dir"], "s": m["senders"], "t": m["desc"],
              "a": m["attrs"], "g": [{"n": g["name"], "t": g["desc"], "b": g["start"], "l": g["len"], "o": g["order"],
                                      "sg": g["signed"], "f": g["factor"], "of": g["offset"], "lo": g["min"], "hi": g["max"],
-                                     "u": g["unit"], "e": g["enum"], "r": g["rx"], "x": g["mux"]} for g in m["signals"]]}
+                                     "u": g["unit"], "e": g["enum"], "r": g["rx"], "x": g["mux"],
+                                     "v": [[idx.get(v, -1), lab] for v, lab in g.get("vars", [])]} for g in m["signals"]]}
             for m in can["messages"]]}
+        for k, m in enumerate(can["m"]):                    # variable page: which CAN signal fills it
+            for gi, g in enumerate(m["g"]):
+                for vi, _lab in g["v"]:
+                    if vi >= 0:
+                        items[vi].setdefault("cn", []).append([k, gi])
     return {"title": title, "dataset": dataset, "it": items, "comps": comps, "sp": sp, "can": can}
 
 
@@ -293,11 +299,11 @@ function pageHome(){
  +`<h3>Start points</h3><p class="mut">Functions that no function in the code calls: tasks, init, interrupts, diagnostics - or unused code. Sorted by how much they reach.</p>`
  +table(['Function','Component','Calls','Reaches'],D.sp.slice(0,300).map(([f,n,r])=>[A(f),esc(C[IT[f].c].n),n,r+' functions']))+(D.sp.length>300?`<p class="mut">+${D.sp.length-300} more</p>`:'')}
 const NUM=v=>v==null?'':(typeof v==='number'?+v.toPrecision(10):v);
-function canSigTable(m){const E=D.can.ecu;return table(['Name','Description','Start bit / Length / Order','Range','Factor / Offset','Unit','Value / enum table','Receivers'],
+function canSigTable(m){const E=D.can.ecu;return table(['Name','Description','Start bit / Length / Order','Range','Factor / Offset','Unit','Value / enum table','Receivers','C variable'],
  m.g.map(g=>{const ks=Object.keys(g.e||{});return [`<b>${esc(g.n)}</b>`+(g.x?` <span class="mut">(mux ${esc(g.x)})</span>`:''),esc(g.t||''),`${g.b} / ${g.l} / ${esc(g.o)}${g.sg?' signed':''}`,
   g.lo!=null&&g.hi!=null?esc(NUM(g.lo)+' ... '+NUM(g.hi)):'',esc(NUM(g.f)+' / '+NUM(g.of)),esc(g.u),
   ks.length?`<span class="enum">${esc(ks.slice(0,8).map(q=>q+'='+g.e[q]).join('; ')+(ks.length>8?'; +'+(ks.length-8)+' more':''))}</span>`:'',
-  g.r.map(r=>r===E?`<b>${esc(r)}</b>`:esc(r)).join(', ')]}))}
+  g.r.map(r=>r===E?`<b>${esc(r)}</b>`:esc(r)).join(', '),(g.v||[]).map(([i,l])=>i>=0?A(i):`<code>${esc(l)}</code>`).join(', ')]}))}
 function pageCan(){const K=D.can;let h=`<h2>CAN</h2><div class="meta"><span class="tag">DBC</span>${K.m.length} messages &middot; ${K.m.reduce((a,m)=>a+m.g.length,0)} signals from <code>${esc(K.dbc)}</code>`+(K.ecu?` &middot; messages the ECU <code>${esc(K.ecu)}</code> sends (TX) or receives (RX)`:' &middot; whole bus')+`</div>`;
  [['Sent by the ECU (TX)','TX'],['Received by the ECU (RX)','RX'],['Other messages','']].forEach(([t,d])=>{
   const ms=K.m.map((m,k)=>[m,k]).filter(([m])=>(m.d==='TX'||m.d==='RX'?m.d:'')===d);if(!ms.length)return;
@@ -352,6 +358,7 @@ function pageItem(id){
  else if(x.t==='v'){
   h=head(x,id,(x.st?` &middot; ${esc(x.st)}`:'')+(x.di?` &middot; defined in <code>${esc(x.di)}</code>`:''))+docBlock(x);
   h+=`<h3>A2L</h3>`+table(['Description','Range','Value / enum table','Unit'],[[esc(x.d||''),esc(x.r||''),valCell(x,id),esc(x.u||'')]]);
+  if(x.cn&&D.can)h+=`<h3>CAN signal</h3><p class="mut">Filled by the getter in the signal reader function (signal index and variable from the project's signal configuration).</p>`+table(['Message','Signal','Unit','Value / enum table'],x.cn.map(([k,gi])=>{const m=D.can.m[k],g=m.g[gi],ks=Object.keys(g.e||{});return [`<a href="#m/${k}">${esc(m.n)}</a>`,`<b>${esc(g.n)}</b>`,esc(g.u),ks.length?`<span class="enum">${esc(ks.slice(0,8).map(q=>q+'='+g.e[q]).join('; '))}</span>`:'']}));
   if(x.at)h+=`<div class="warn">Address taken - may also be written through a pointer.</div>`;
   const fr=(a)=>table(['Function','At','Summary'],a.map(([f,l])=>[A(f),`<code>${esc(l)}</code>`,esc(IT[f].s||'')]));
   h+=`<h3>Written by</h3>`+(x.wr.length?fr(x.wr):'<p class="mut">no writer found (pointer write, inactive #ifdef, outside the compile DB, or external input)</p>')+`<h3>Read by</h3>`+(x.rd.length?fr(x.rd):'<p class="mut">no reader</p>')}

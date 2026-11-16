@@ -1104,14 +1104,15 @@ def _consume_clang_flags() -> None:
                 sys.exit(2)
             opts[value_flags[name]] = str(Path(val).resolve())
             opts["enabled"] = True
-        elif name == "--dbc-node":
+        elif name in ("--dbc-node", "--can-table", "--can-reader"):
+            key = name[2:].replace("-", "_")
             if eq:
-                opts["dbc_node"] = inline
+                opts[key] = inline
             elif i + 1 < len(args):
                 i += 1
-                opts["dbc_node"] = args[i]
+                opts[key] = args[i]
             else:
-                print("error: --dbc-node needs an ECU name (or * for the whole bus)", file=sys.stderr)
+                print(f"error: {name} needs a name (ECU / table / function; --dbc-node * = whole bus)", file=sys.stderr)
                 sys.exit(2)
         elif name == "--par-name":
             if eq:
