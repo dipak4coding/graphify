@@ -180,11 +180,11 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
              "a": m["attrs"], "g": [{"n": g["name"], "t": g["desc"], "b": g["start"], "l": g["len"], "o": g["order"],
                                      "sg": g["signed"], "f": g["factor"], "of": g["offset"], "lo": g["min"], "hi": g["max"],
                                      "u": g["unit"], "e": g["enum"], "r": g["rx"], "x": g["mux"],
-                                     "v": [[idx.get(v, -1), lab] for v, lab in g.get("vars", [])]} for g in m["signals"]]}
+                                     "v": [[idx.get(lk["var"], -1), lk["label"], lk["index"], lk["getter"]] for lk in g.get("links", [])]} for g in m["signals"]]}
             for m in can["messages"]]}
         for k, m in enumerate(can["m"]):                    # variable page: which CAN signal fills it
             for gi, g in enumerate(m["g"]):
-                for vi, _lab in g["v"]:
+                for vi, *_rest in g["v"]:
                     if vi >= 0:
                         items[vi].setdefault("cn", []).append([k, gi])
     return {"title": title, "dataset": dataset, "it": items, "comps": comps, "sp": sp, "can": can}
@@ -213,6 +213,7 @@ a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
 #side{width:320px;min-width:260px;background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column}
 #side h1{font-size:15px;margin:0;padding:12px 14px 6px}#side h1 a{color:var(--fg)}
 #q{margin:6px 14px;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit}
+#comp{margin:0 14px 6px;padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit;max-width:292px}
 #chips{padding:0 14px 6px;display:flex;gap:4px;flex-wrap:wrap}
 .chip{border:1px solid var(--line);background:var(--bg);color:var(--mut);border-radius:11px;padding:1px 9px;font-size:12px;cursor:pointer}
 .chip.on{background:var(--acc);color:#fff;border-color:var(--acc)}
@@ -232,7 +233,7 @@ code{background:var(--code);padding:0 4px;border-radius:3px;font-size:12.5px}.mu
 .ctx{font-size:11px;color:var(--mut);border:1px dashed var(--mut);border-radius:8px;padding:0 6px;margin-left:6px}.ln{color:var(--mut);font-size:11px;margin-left:6px}
 </style></head><body>
 <div id="side"><h1><a href="#" id="home"></a></h1><input id="q" placeholder="Search name or description ..." autocomplete="off">
-<div id="chips"></div><div id="list"></div></div>
+<select id="comp" title="Show only one component"></select><div id="chips"></div><div id="list"></div></div>
 <div id="main"></div>
 <script id="data" type="application/json">__DATA__</script>
 <script>
@@ -300,7 +301,7 @@ function pageHome(){
  +table(['Function','Component','Calls','Reaches'],D.sp.slice(0,300).map(([f,n,r])=>[A(f),esc(C[IT[f].c].n),n,r+' functions']))+(D.sp.length>300?`<p class="mut">+${D.sp.length-300} more</p>`:'')}
 const NUM=v=>v==null?'':(typeof v==='number'?+v.toPrecision(10):v);
 function canSigTable(m){const E=D.can.ecu;return table(['Name','Description','Start bit / Length / Order','Range','Factor / Offset','Unit','Value / enum table','Receivers','C variable'],
- m.g.map(g=>{const ks=Object.keys(g.e||{});return [`<b>${esc(g.n)}</b>`+(g.x?` <span class="mut">(mux ${esc(g.x)})</span>`:''),esc(g.t||''),`${g.b} / ${g.l} / ${esc(g.o)}${g.sg?' signed':''}`,
+ m.g.map((g,gi)=>{const ks=Object.keys(g.e||{});return [`<a href="#s/${D.can.m.indexOf(m)}/${gi}"><b>${esc(g.n)}</b></a>`+(g.x?` <span class="mut">(mux ${esc(g.x)})</span>`:''),esc(g.t||''),`${g.b} / ${g.l} / ${esc(g.o)}${g.sg?' signed':''}`,
   g.lo!=null&&g.hi!=null?esc(NUM(g.lo)+' ... '+NUM(g.hi)):'',esc(NUM(g.f)+' / '+NUM(g.of)),esc(g.u),
   ks.length?`<span class="enum">${esc(ks.slice(0,8).map(q=>q+'='+g.e[q]).join('; ')+(ks.length>8?'; +'+(ks.length-8)+' more':''))}</span>`:'',
   g.r.map(r=>r===E?`<b>${esc(r)}</b>`:esc(r)).join(', '),(g.v||[]).map(([i,l])=>i>=0?A(i):`<code>${esc(l)}</code>`).join(', ')]}))}
@@ -308,6 +309,19 @@ function pageCan(){const K=D.can;let h=`<h2>CAN</h2><div class="meta"><span clas
  [['Sent by the ECU (TX)','TX'],['Received by the ECU (RX)','RX'],['Other messages','']].forEach(([t,d])=>{
   const ms=K.m.map((m,k)=>[m,k]).filter(([m])=>(m.d==='TX'||m.d==='RX'?m.d:'')===d);if(!ms.length)return;
   h+=`<h3>${t}</h3>`+table(['Message','Frame ID','DLC','Cycle [ms]','Sender','Signals','Description'],ms.map(([m,k])=>[`<a href="#m/${k}">${esc(m.n)}</a>`,esc(m.h),m.l,m.y||'-',esc(m.s.join(', ')),m.g.length,esc(m.t||'')]))});
+ main.innerHTML=h}
+function pageSig(k,gi){const m=D.can&&D.can.m[k],g=m&&m.g[gi];if(!g){main.innerHTML='<p>Unknown signal.</p>';return}
+ const ks=Object.keys(g.e||{});
+ let h=`<h2>${esc(g.n)}</h2><div class="meta"><span class="tag">CAN signal</span><a href="#can">CAN</a> &middot; message <a href="#m/${k}">${esc(m.n)}</a> (<code>${esc(m.h)}</code>)${m.d==='TX'||m.d==='RX'?' &middot; <b>'+m.d+'</b> for '+esc(D.can.ecu):''}</div>`;
+ if(g.t)h+=`<p>${esc(g.t)}</p>`;
+ h+=table(['Start bit','Length','Order','Signed','Factor','Offset','Range','Unit'],[[g.b,g.l,esc(g.o),g.sg?'yes':'no',esc(NUM(g.f)),esc(NUM(g.of)),g.lo!=null&&g.hi!=null?esc(NUM(g.lo)+' ... '+NUM(g.hi)):'',esc(g.u)]]);
+ if(g.x)h+=`<p class="mut">Multiplexed: ${esc(g.x)}</p>`;
+ h+=`<p>Receivers: ${g.r.map(r=>r===D.can.ecu?'<b>'+esc(r)+'</b>':esc(r)).join(', ')||'-'}</p>`;
+ if(ks.length)h+=`<h3>Value / enum table</h3>`+table(['Value','Meaning'],ks.slice(0,200).map(q=>[esc(q),esc(g.e[q])]));
+ h+=`<h3>C variable (where the CAN value is stored)</h3>`;
+ if(!g.v.length)h+=`<p class="mut">Not linked to a variable (no row in the signal configuration table, or no getter call found).</p>`;
+ g.v.forEach(([i,l,ix,gt])=>{h+=table(['Variable','Signal index','Getter'],[[i>=0?A(i):`<code>${esc(l)}</code> <span class="mut">(not in the exported scope)</span>`,esc(ix),`<code>${esc(gt)}</code>`]]);
+  if(i>=0){const x=IT[i];if(x.wr.length)h+=`<h4>Written by</h4><p>${list(x.wr.map(r=>r[0]),40)}</p>`;if(x.rd.length)h+=`<h4>Read by</h4><p>${list(x.rd.map(r=>r[0]),60)}</p>`}});
  main.innerHTML=h}
 function pageMsg(k){const m=D.can.m[k];if(!m){main.innerHTML='<p>Unknown message.</p>';return}
  let h=`<h2>${esc(m.n)}</h2><div class="meta"><span class="tag">CAN message</span><a href="#can">CAN</a> &middot; <code>${esc(m.h)}</code> &middot; DLC ${m.l}`+(m.y?` &middot; ${m.y} ms`:'')+` &middot; sender ${esc(m.s.join(', ')||'-')}`+(m.d==='TX'||m.d==='RX'?` &middot; <b>${m.d}</b> for ${esc(D.can.ecu)}`:'')+`</div>`;
@@ -358,7 +372,7 @@ function pageItem(id){
  else if(x.t==='v'){
   h=head(x,id,(x.st?` &middot; ${esc(x.st)}`:'')+(x.di?` &middot; defined in <code>${esc(x.di)}</code>`:''))+docBlock(x);
   h+=`<h3>A2L</h3>`+table(['Description','Range','Value / enum table','Unit'],[[esc(x.d||''),esc(x.r||''),valCell(x,id),esc(x.u||'')]]);
-  if(x.cn&&D.can)h+=`<h3>CAN signal</h3><p class="mut">Filled by the getter in the signal reader function (signal index and variable from the project's signal configuration).</p>`+table(['Message','Signal','Unit','Value / enum table'],x.cn.map(([k,gi])=>{const m=D.can.m[k],g=m.g[gi],ks=Object.keys(g.e||{});return [`<a href="#m/${k}">${esc(m.n)}</a>`,`<b>${esc(g.n)}</b>`,esc(g.u),ks.length?`<span class="enum">${esc(ks.slice(0,8).map(q=>q+'='+g.e[q]).join('; '))}</span>`:'']}));
+  if(x.cn&&D.can)h+=`<h3>CAN signal</h3><p class="mut">Filled by the getter in the signal reader function (signal index and variable from the project's signal configuration).</p>`+table(['Message','Signal','Unit','Value / enum table'],x.cn.map(([k,gi])=>{const m=D.can.m[k],g=m.g[gi],ks=Object.keys(g.e||{});return [`<a href="#m/${k}">${esc(m.n)}</a>`,`<a href="#s/${k}/${gi}"><b>${esc(g.n)}</b></a>`,esc(g.u),ks.length?`<span class="enum">${esc(ks.slice(0,8).map(q=>q+'='+g.e[q]).join('; '))}</span>`:'']}));
   if(x.at)h+=`<div class="warn">Address taken - may also be written through a pointer.</div>`;
   const fr=(a)=>table(['Function','At','Summary'],a.map(([f,l])=>[A(f),`<code>${esc(l)}</code>`,esc(IT[f].s||'')]));
   h+=`<h3>Written by</h3>`+(x.wr.length?fr(x.wr):'<p class="mut">no writer found (pointer write, inactive #ifdef, outside the compile DB, or external input)</p>')+`<h3>Read by</h3>`+(x.rd.length?fr(x.rd):'<p class="mut">no reader</p>')}
@@ -373,18 +387,33 @@ function pageItem(id){
  else if(x.t==='x'){h=head(x,id,x.sym?` &middot; symbol <code>${esc(x.sym)}</code>`:'')+`<p>A2L axis points &middot; range ${esc(x.r||'-')} ${esc(x.u||'')} &middot; max points ${esc(x.mx==null?'':x.mx)}${x.iq?` &middot; input quantity <code>${esc(x.iq)}</code>`:''}</p>`+(x.d?`<p>${esc(x.d)}</p>`:'')+(x.vals?`<h3>Values</h3><pre>${esc(x.vals)}</pre>`:'')}
  main.innerHTML=h;main.scrollTop=0}
 function route(){if(location.hash==='#can'&&D.can){pageCan();main.scrollTop=0;return}
+ const sg=location.hash.match(/^#s\/(\d+)\/(\d+)/);if(sg&&D.can){pageSig(+sg[1],+sg[2]);main.scrollTop=0;return}
  const m=location.hash.match(/^#([ikm])\/(\d+)/);if(!m)return pageHome();m[1]==='k'?pageComp(+m[2]):m[1]==='m'?pageMsg(+m[2]):pageItem(+m[2]);main.scrollTop=0}
 
 // ---------- sidebar: search + filter ----------
-let kind='';const CH=[['','All'],['f','Functions'],['v','Variables'],['c','Calibrations']];
+let kind='',comp=-1;const CH=[['','All'],['f','Functions'],['v','Variables'],['c','Calibrations']].concat(D.can?[['s','CAN signals']]:[]);
+$('#comp').innerHTML='<option value="-1">All components ('+C.length+')</option>'+C.map((c,k)=>`<option value="${k}">${esc(c.n)} (${c.f.length})</option>`).join('');
+$('#comp').onchange=e=>{comp=+e.target.value;side()};
+// items that belong to a component: its functions and everything they read, write or use as calibration
+const CS=C.map(c=>{const st=new Set();c.f.forEach(f=>{st.add(f);const x=IT[f];x.rd.forEach(r=>st.add(r[0]));x.wr.forEach(r=>st.add(r[0]));x.ca.forEach(i=>st.add(i))});return st});
+const inComp=i=>comp<0||CS[comp].has(i);
+const sigIn=g=>comp<0||g.v.some(v=>v[0]>=0&&CS[comp].has(v[0]));
 $('#chips').innerHTML=CH.map(([k,l])=>`<span class="chip${k===kind?' on':''}" data-k="${k}">${l}</span>`).join('');
 $('#chips').onclick=e=>{if(e.target.dataset.k!==undefined){kind=e.target.dataset.k;document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on',c.dataset.k===kind));side()}};
 function side(){const q=$('#q').value.trim().toLowerCase(),L=$('#list');
- if(!q&&!kind){L.innerHTML=C.map((c,k)=>`<a href="#k/${k}">${esc(c.n)} <small>${c.f.length}</small></a>`).join('')+(D.can?`<a href="#can">CAN messages <small>${D.can.m.length}</small></a>`:'');return}
- const cm=[];if(D.can&&q&&!kind)D.can.m.forEach((m,k)=>{if(cm.length<100&&(m.n.toLowerCase().includes(q)||m.g.some(g=>g.n.toLowerCase().includes(q)||(g.t||'').toLowerCase().includes(q))))cm.push(`<a href="#m/${k}">${esc(m.n)} <small>can message</small></a>`)});
- const out=[];for(let i=0;i<IT.length&&out.length<300;i++){const x=IT[i];if(kind?x.t!==kind:x.t==='x')continue;
+ if(!q&&!kind&&comp<0){L.innerHTML=C.map((c,k)=>`<a href="#k/${k}">${esc(c.n)} <small>${c.f.length}</small></a>`).join('')+(D.can?`<a href="#can">CAN messages <small>${D.can.m.length}</small></a>`:'');return}
+ const head=comp>=0?`<a href="#k/${comp}"><b>${esc(C[comp].n)}</b> <small>component page</small></a>`:'';
+ const cm=[];
+ if(D.can&&(!kind||kind==='s')){
+  D.can.m.forEach((m,k)=>{
+   if(!kind&&(q||comp>=0)&&cm.length<100&&m.g.some(sigIn)&&(!q||m.n.toLowerCase().includes(q)))cm.push(`<a href="#m/${k}">${esc(m.n)} <small>can message</small></a>`);
+   m.g.forEach((g,gi)=>{if(cm.length<400&&sigIn(g)&&(q?(g.n.toLowerCase().includes(q)||(g.t||'').toLowerCase().includes(q)||m.n.toLowerCase().includes(q)):(kind==='s'||comp>=0)))
+     cm.push(`<a href="#s/${k}/${gi}">${esc(g.n)} <small>can signal &middot; ${esc(m.n)}</small></a>`)})})}
+ const out=[];
+ if(kind!=='s')for(let i=0;i<IT.length&&out.length<300;i++){const x=IT[i];if(kind?x.t!==kind:x.t==='x')continue;
+  if(!inComp(i)||(x.t==='f'&&comp>=0&&x.c!==comp))continue;
   if(!q||x.n.toLowerCase().includes(q)||(x.d&&x.d.toLowerCase().includes(q))||(x.s&&x.s.toLowerCase().includes(q))||(x.a2l&&x.a2l.some(a=>a.n.toLowerCase().includes(q))))out.push(i)}
- L.innerHTML=cm.join('')+out.map(i=>`<a href="#i/${i}">${esc(IT[i].n)} <small>${KIND[IT[i].t].toLowerCase()}</small></a>`).join('')||'<p class="mut" style="padding:8px">No match.</p>'}
+ L.innerHTML=head+out.map(i=>`<a href="#i/${i}">${esc(IT[i].n)} <small>${KIND[IT[i].t].toLowerCase()}</small></a>`).join('')+cm.join('')||'<p class="mut" style="padding:8px">No match.</p>'}
 $('#q').oninput=side;window.onhashchange=route;side();route();
 </script></body></html>
 """

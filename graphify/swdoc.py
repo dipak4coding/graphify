@@ -500,7 +500,9 @@ def variable_note(c: _Ctx, v: str) -> str:
         for sid in cs:
             sm, e = M.meta(sid), M.edge(sid, v, {"carried_in"}) or {}
             em = e.get("metadata") or {}
-            rows.append([_raw(f"[[{_stem(sm.get('message') or '')}]]"), M.label(sid), sm.get("unit") or "",
+            ms, ss = getattr(c, "can_stems", None) or ({}, {})
+            msg = sm.get("message") or ""
+            rows.append([_raw(f"[[{ms.get(msg, _stem(msg))}]]"), _raw(f"[[{ss[(msg, M.label(sid))]}]]" if (msg, M.label(sid)) in ss else M.label(sid)), sm.get("unit") or "",
                          _enum_text(sm.get("enum") or {}), f"{em.get('index', '')}", f"`{em.get('getter', '')}` L{em.get('getter_line', '')}"])
         out += ["### CAN signal (filled by the getter in the signal reader function)", ""] + _table(
             ["Message", "Signal", "Unit", "Value / enum table", "Signal index", "Getter"], rows)
@@ -796,7 +798,13 @@ def can_data(M: "_Model") -> dict | None:
             mux = sm.get("multiplex")
             cv = sorted({e["target"] for e in M.out[sid] if e.get("relation") == "carried_in" and M.t(e["target"]) == "variable"},
                         key=lambda x: M.label(x).lower())
-            sigs.append({"name": M.label(sid), "vars": [(v, M.label(v)) for v in cv], "desc": str(M.nodes[sid].get("rationale") or ""),
+            lk = []
+            for v in cv:
+                em = (M.edge(sid, v, {"carried_in"}) or {}).get("metadata") or {}
+                lk.append({"var": v, "label": M.label(v), "index": em.get("index"), "getter": em.get("getter") or "",
+                           "line": em.get("getter_line"), "file": em.get("getter_file") or "",
+                           "readers": M.sources(v, READ, ("function",)), "writers": M.sources(v, WRITE, ("function",))})
+            sigs.append({"name": M.label(sid), "vars": [(v, M.label(v)) for v in cv], "links": lk, "desc": str(M.nodes[sid].get("rationale") or ""),
                          "start": sm.get("start_bit"), "len": sm.get("length"), "order": order,
                          "signed": bool(sm.get("signed")), "factor": sm.get("factor"), "offset": sm.get("offset"),
                          "min": sm.get("min"), "max": sm.get("max"), "unit": sm.get("unit") or "",
@@ -812,7 +820,7 @@ def can_data(M: "_Model") -> dict | None:
     return {"dbc": dbc, "ecu": ecu, "messages": out}
 
 
-def _can_sig_rows(sigs: list, ecu: str, stems: dict | None = None) -> list:
+def _can_sig_rows(sigs: list, ecu: str, stems: dict | None = None, sig_stems: dict | None = None, msg: str = "") -> list:
     rows = []
     for g in sigs:
         rng = _fmt_range(_num(g["min"]), _num(g["max"])) if g["min"] is not None and g["max"] is not None else ""
@@ -820,7 +828,8 @@ def _can_sig_rows(sigs: list, ecu: str, stems: dict | None = None) -> list:
         pos = f"{g['start']} · {g['len']} · {g['order']}" + (" signed" if g["signed"] else "")
         rx = ", ".join(("**" + r + "**") if r == ecu else r for r in g["rx"])
         cv = ", ".join(f"[[{stems[v]}]]" if stems and v in stems else f"`{lab}`" for v, lab in g.get("vars", []))
-        rows.append([g["name"] + (f" *(mux {g['mux']})*" if g["mux"] else ""), _short(g["desc"], 120), pos, rng, fo,
+        nm = f"[[{sig_stems[(msg, g['name'])]}]]" if sig_stems and (msg, g["name"]) in sig_stems else g["name"]
+        rows.append([_raw(nm + (f" *(mux {g['mux']})*" if g["mux"] else "")), _short(g["desc"], 120), pos, rng, fo,
                      g["unit"], _enum_text(g["enum"]), rx, _raw(cv) if cv else ""])
     return rows
 
@@ -828,7 +837,60 @@ def _can_sig_rows(sigs: list, ecu: str, stems: dict | None = None) -> list:
 CAN_SIG_HEAD = ["Name", "Description", "Start bit · Length · Order", "Range", "Factor · Offset", "Unit", "Value / enum table", "Receivers", "C variable"]
 
 
-def can_message_note(d: dict, m: dict, stems: dict | None = None) -> str:
+def can_stems(d: dict, taken: set | None = None) -> tuple:
+    """Unique note names of the CAN messages and signals: ({message: stem}, {(message, signal): stem})."""
+    used = set(taken or ())
+    msg, sig = {}, {}
+
+    def pick(base: str, suffix: str) -> str:
+        cand, n = base, 1
+        if cand.lower() in used:
+            cand = f"{base} ({suffix})"
+        while cand.lower() in used:
+            n += 1
+            cand = f"{base} ({suffix} {n})"
+        used.add(cand.lower())
+        return cand
+
+    for m in d["messages"]:
+        msg[m["name"]] = pick(_stem(m["name"]), "CAN message")
+    for m in d["messages"]:
+        for g in m["signals"]:
+            sig[(m["name"], g["name"])] = pick(_stem(g["name"]), m["name"])
+    return msg, sig
+
+
+def can_signal_note(d: dict, m: dict, g: dict, mstem: str, var_stems: dict | None = None) -> str:
+    out = _fm({"type": "can_signal", "tags": ["graphify/can"], "message": m["name"], "frame_id": m["id"], "generated": True})
+    out += [f"# {g['name']}", "", f"[[_HOME]] · [[CAN]] · [[{mstem}]]", ""]
+    rng = _fmt_range(_num(g["min"]), _num(g["max"])) if g["min"] is not None and g["max"] is not None else "-"
+    rows = [["Message", _raw(f"[[{mstem}]] (`{m['hex']}`)")], ["Start bit · Length · Order", f"{g['start']} · {g['len']} · {g['order']}" + (" · signed" if g["signed"] else "")],
+            ["Factor · Offset", f"{_num(g['factor'])} · {_num(g['offset'])}"], ["Range", rng], ["Unit", g["unit"] or "-"],
+            ["Receivers", _raw(", ".join(("**" + r + "**") if r == d["ecu"] else r for r in g["rx"]) or "-")]]
+    if g["mux"]:
+        rows.append(["Multiplex", g["mux"]])
+    out += _table(["Item", "Value"], rows)
+    if g["desc"]:
+        out += ["## Description", "", g["desc"], ""]
+    if g["enum"]:
+        out += ["## Value / enum table", ""] + _table(["Value", "Meaning"], [[k, v] for k, v in g["enum"].items()][:200])
+    out += ["## C variable (where the CAN value is stored)", ""]
+    if not g.get("links"):
+        out += ["*Not linked to a variable (no row in the signal configuration table, or no getter call found).*", ""]
+    for lk in g.get("links", []):
+        vs = var_stems or {}
+        out += _table(["Variable", "Signal index", "Getter"], [[_raw(f"[[{vs[lk['var']]}]]" if lk["var"] in vs else f"`{lk['label']}`"),
+                    f"{lk['index']}", f"`{lk['getter']}` ({lk['file']}:{lk['line']})"]])
+        for title, key in (("Written by", "writers"), ("Read by", "readers")):
+            fl = [f for f in lk.get(key, [])][:40]
+            if fl:
+                out += [f"**{title}:** " + ", ".join(f"[[{vs[f]}]]" if f in vs else f"`{f}`" for f in fl), ""]
+    out += ["> [!info] Source: the DBC (layout, scaling) and the signal configuration of the code (variable).", "",
+            "## My notes", "", USER_BLOCK]
+    return "\n".join(out)
+
+
+def can_message_note(d: dict, m: dict, stems: dict | None = None, sig_stems: dict | None = None) -> str:
     out = _fm({"type": "can_message", "tags": ["graphify/can"], "frame_id": m["id"], "direction": m["dir"], "generated": True})
     out += [f"# {m['name']}", "", f"[[_HOME]] · [[CAN]]", ""]
     rows = [["Frame ID", f"`{m['hex']}` ({m['id']})"], ["Length (DLC)", m["dlc"]],
@@ -839,23 +901,15 @@ def can_message_note(d: dict, m: dict, stems: dict | None = None) -> str:
     out += _table(["Item", "Value"], rows)
     if m["desc"]:
         out += ["## Description", "", m["desc"], ""]
-    out += [f"## Signals ({len(m['signals'])})", ""] + _table(CAN_SIG_HEAD, _can_sig_rows(m["signals"], d["ecu"], stems))
+    out += [f"## Signals ({len(m['signals'])})", ""] + _table(CAN_SIG_HEAD, _can_sig_rows(m["signals"], d["ecu"], stems, sig_stems, m["name"]))
     out += ["> [!info] Source: the DBC only. Bit layout is the DBC start bit; Motorola = start bit is the MSB.", "",
             "## My notes", "", USER_BLOCK]
     return "\n".join(out)
 
 
-def can_notes(d: dict, var_stems: dict | None = None) -> dict:
-    """{relative path: text}: can/CAN.md (index) and can/messages/<message>.md"""
-    used, stems = set(), {}
-    for m in d["messages"]:
-        base = _stem(m["name"])
-        cand, n = base, 1
-        while cand.lower() in used:
-            n += 1
-            cand = f"{base} (CAN {n})"
-        used.add(cand.lower())
-        stems[m["name"]] = cand
+def can_notes(d: dict, var_stems: dict | None = None, cstems: tuple | None = None) -> dict:
+    """{relative path: text}: can/CAN.md (index), can/messages/<message>.md and can/signals/<signal>.md"""
+    stems, sig_stems = cstems or can_stems(d)
     out = _fm({"type": "can", "tags": ["graphify/can"], "generated": True})
     nsig = sum(len(m["signals"]) for m in d["messages"])
     out += ["# CAN", "", "[[_HOME]]", "",
@@ -872,7 +926,9 @@ def can_notes(d: dict, var_stems: dict | None = None) -> dict:
     out += ["## My notes", "", USER_BLOCK]
     notes = {"can/CAN.md": "\n".join(out)}
     for m in d["messages"]:
-        notes[f"can/messages/{stems[m['name']]}.md"] = can_message_note(d, m, var_stems)
+        notes[f"can/messages/{stems[m['name']]}.md"] = can_message_note(d, m, var_stems, sig_stems)
+        for g in m["signals"]:
+            notes[f"can/signals/{sig_stems[(m['name'], g['name'])]}.md"] = can_signal_note(d, m, g, stems[m["name"]], var_stems)
     return notes
 
 
@@ -941,6 +997,8 @@ def build_vault(raw: dict, patterns: list, exclude: list | None = None, lookup=N
     c = _Ctx(M, stems, mod_stem, lookup, dataset, mermaid)
     c.plumbing = plumbing
     can = can_data(M)
+    cstems = can_stems(can, used) if can else None
+    c.can_stems = cstems
     for k in cals:
         p = M.meta(k).get("calibration_path")
         if p:
@@ -952,7 +1010,7 @@ def build_vault(raw: dict, patterns: list, exclude: list | None = None, lookup=N
     if not want_notes:           # the HTML export needs the scope and the context, not the markdown
         return {"notes": {}, "module": mod_stem, "empty": False, "ctx": c, "funcs": funcs, "vars": sorted(vars_),
                 "cals": sorted(cals), "axes": sorted(axes), "border": sorted(border), "plumbing": plumbing,
-                "can": can, "stems": stems, "counts": {"functions": len(funcs), "variables": len(vars_), "calibrations": len(cals),
+                "can": can, "stems": stems, "cstems": cstems, "counts": {"functions": len(funcs), "variables": len(vars_), "calibrations": len(cals),
                            "axes": len(axes), "border": len(border)}}
     notes = {}
     for f in funcs:
@@ -966,7 +1024,7 @@ def build_vault(raw: dict, patterns: list, exclude: list | None = None, lookup=N
     for b in sorted(border):
         notes[f"border/{stems[b]}.md"] = border_note(c, b)
     notes[f"modules/{mod_stem}.md"] = module_note(c, funcs, sorted(vars_), sorted(cals), sorted(border), inside_vars)
-    return {"notes": notes, "module": mod_stem, "empty": False, "can": can, "stems": stems,
+    return {"notes": notes, "module": mod_stem, "empty": False, "can": can, "stems": stems, "cstems": cstems,
             "counts": {"functions": len(funcs), "variables": len(vars_), "calibrations": len(cals), "axes": len(axes),
                        "border": len(border)}}
 
@@ -1057,7 +1115,7 @@ def single_file(res: dict, title: str = "Software", dataset: str = "") -> str:
     can = res.get("can")
     if can:
         out += ["## CAN messages", ""]
-        cn = can_notes(can, res.get("stems"))
+        cn = can_notes(can, res.get("stems"), res.get("cstems"))
         for rel in sorted(cn, key=lambda r: (r != "can/CAN.md", Path(r).stem.lower())):
             body = [ln for ln in _body(cn[rel], "## My notes") if not ln.startswith("[[_HOME]]")]
             if rel == "can/CAN.md":
@@ -1231,7 +1289,7 @@ def run_swdoc(argv: list) -> int:
     for rel, text in res["notes"].items():
         v.write(rel, text, res["module"])
     if res.get("can"):
-        for rel, text in can_notes(res["can"], res.get("stems")).items():
+        for rel, text in can_notes(res["can"], res.get("stems"), res.get("cstems")).items():
             v.write(rel, text, "CAN")
         v.modules["CAN"] = "CAN"
     pruned = v.finish(res["module"], opts["prune"])

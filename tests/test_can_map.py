@@ -129,3 +129,30 @@ def test_documentation_shows_variable(proj, monkeypatch):
     from graphify.swdoc_html import build_data
     d = build_data(build_vault({"nodes": nodes, "edges": edges}, ["."], want_notes=False), "T")
     assert any(g["v"] and g["v"][0][0] >= 0 for m in d["can"]["m"] for g in m["g"])
+
+
+def test_signal_pages_and_links(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    nodes, edges = _run(proj)
+    from graphify.swdoc import build_vault, can_notes, single_file
+    res = build_vault({"nodes": nodes, "edges": edges}, ["."])
+    notes = can_notes(res["can"], res["stems"], res["cstems"])
+    assert "can/signals/ESP_Mode.md" in notes
+    sig = notes["can/signals/ESP_Mode.md"]
+    assert "0 | Off" in sig and "[[SicSig_Mode]]" in sig and "`BilSig_Get_Signal_U8`" in sig and "| 9 |" in sig
+    assert "[[ESP_Mode]]" in notes["can/messages/ESP_21.md"]                       # signal name in the message table is a link
+    assert "[[ESP_Mode]]" in res["notes"]["variables/SicSig_Mode.md"]              # and on the variable page
+    text = single_file(res)
+    assert "### ESP_Mode" in text and "[[#ESP_Mode]]" in text
+
+
+def test_html_signal_page_and_component_filter(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    nodes, edges = _run(proj)
+    from graphify.swdoc import build_vault
+    from graphify.swdoc_html import build_data, render
+    d = build_data(build_vault({"nodes": nodes, "edges": edges}, ["."], want_notes=False), "T")
+    g = next(g for m in d["can"]["m"] for g in m["g"] if g["n"] == "ESP_Mode")
+    assert g["v"][0][0] >= 0 and g["v"][0][2] == 9 and g["v"][0][3] == "BilSig_Get_Signal_U8"
+    html = render(d)
+    assert 'id="comp"' in html and "pageSig" in html and "#s/" in html

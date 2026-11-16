@@ -124,7 +124,8 @@ def test_can_notes_and_single_file(dbc_file):
     res = build_vault(_graph_raw(dbc_file), ["ku/kku"])
     assert res["can"]["ecu"] == "TCU" and [m["name"] for m in res["can"]["messages"]] == ["TCU_Msg", "ESP_21"]   # TX first
     notes = can_notes(res["can"])
-    assert set(notes) == {"can/CAN.md", "can/messages/ESP_21.md", "can/messages/TCU_Msg.md"}
+    assert {r for r in notes if not r.startswith("can/signals/")} == {"can/CAN.md", "can/messages/ESP_21.md", "can/messages/TCU_Msg.md"}
+    assert len([r for r in notes if r.startswith("can/signals/")]) == 4          # one page per signal
     esp = notes["can/messages/ESP_21.md"]
     assert "`0x670`" in esp and "0=Off; 1=On; 2=Error" in esp and "**TCU**" in esp and "km/h" in esp and "0.01 · 0" in esp
     assert "[[ESP_21]]" in notes["can/CAN.md"] and "Received by the ECU (RX)" in notes["can/CAN.md"]

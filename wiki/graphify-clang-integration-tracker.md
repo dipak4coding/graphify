@@ -624,3 +624,14 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Documentation | CAN message page: new column "C variable" (link when the variable is in the scope); variable page (Obsidian + HTML): section "CAN signal" with message, signal, unit, enum, signal index, getter |
 | Not covered | the CAN name comes from the comment (confirmed only against the DBC name); no bit position / byte order comparison with the table (the row's other members are ignored); getter loops over arrays (`Sic_Data_CfgSigU8_ci`); getters called outside the reader function; the index of a row that clang cannot fold is listed as `rows_without_index` |
 | Tests | `tests/test_can_map.py` (5): links, files + diagnostics, configurable names, name rules, documentation |
+
+## 56. CAN signals as links, signal pages, component filter
+
+| Item | Detail |
+|---|---|
+| Signal pages | HTML: page `#s/<message>/<signal>` (layout, scaling, range, unit, full enum table, receivers, C variable with signal index and getter, written by / read by). Obsidian: `can/signals/<signal>.md` with the same content; a signal name that exists in several messages or clashes with another note gets a suffix `(message)` |
+| Links | The signal name is a link in the message table, on the variable page (Obsidian + HTML), in the search list and in the sidebar list |
+| Component filter | HTML sidebar: dropdown "All components (n)". With a component chosen the list shows its functions, the variables and calibrations they read / write / use, and the CAN messages and signals whose variable belongs to it. Works together with the search box and the chips (All / Functions / Variables / Calibrations / CAN signals) |
+| Single file | signal pages are headings too (`### <signal>`), links resolve inside the file |
+| Known quirk | "Read by" of a signal also lists the reader function (`Sic_HolenSignale`) when the getter is only declared (not defined) in the parsed files: the out-parameter analysis then falls back to "read". With the real getter definition the function shows as writer |
+| Tests | `tests/test_can_map.py` +2 |
