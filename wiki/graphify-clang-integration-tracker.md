@@ -644,3 +644,12 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Why | The tables describe the component; the user wants the internal side and a clean, short table. The other side (who writes an input / reads an output) stays on the variable page |
 | Lost on purpose | the note "external input (no writer in the code)" in the input table; the variable page still says "no writer found" |
 | Data | `component_signals` already had `inside` and `outside`; only the columns changed |
+
+## 58. Future enrichment ideas
+
+| Item | Detail |
+|---|---|
+| New file | `wiki/graphify-future-enrichment.md`: ideas A (types, struct members, macros, variants, enums), B (conditions, data flow, call args, function pointers, tasks), C (CFG, interprocedural flow, findings) with effort and a recommended order |
+| Explored | B1 condition on reads / writes, B2 `derived_from`, B3 call arguments: what the extractor already has (`_ctx`, `pending_binds`, `param_fx`) and the gap for each, see section E |
+| Status | ideas only, no code changed |
+
