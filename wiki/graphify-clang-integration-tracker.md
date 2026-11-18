@@ -653,3 +653,18 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Explored | B1 condition on reads / writes, B2 `derived_from`, B3 call arguments: what the extractor already has (`_ctx`, `pending_binds`, `param_fx`) and the gap for each, see section E |
 | Status | ideas only, no code changed |
 
+## 59. Data flow, access conditions, call arguments, function pointers (B1-B4)
+
+| Item | Detail |
+|---|---|
+| New module | `graphify/extractors/clang_flow.py` (`FlowRecorder`); option `data_flow` (default on, `"data_flow": false` in `graphify-clang.json` switches it off) |
+| B1 access condition | `reads_var` / `writes_var` / `reads_calibration_field` edges carry `metadata.ctx`: list of `always`, `if`, `else`, `loop`, `switch`, `?:`, `&&` (nested: `if > loop`); merged edges (`reads_writes_var`) keep both lists |
+| B2 `derived_from` | new relation, direction **result variable --> source variable**. Locals are followed inside a function (flow-insensitive alias map), so SigX -> t1..t10 -> SigY becomes one edge. Metadata: `functions`, `lines`, `via` (callee that carried the value), `control_only` (true when only a condition links them, `if (a) x = 1`). `confidence` = INFERRED when the path crosses a callee without source |
+| B3 call arguments | value flow through call arguments, return values, out parameters (`f(&x)`) and writes to globals inside callees (function summaries, fixpoint over the call graph, recursion safe). The `calls` edge gets `metadata.args` = `[{line, args: {arg index: [variable ids]}}]`. No separate `passes_arg` edge: graph loading keeps one edge per node pair, and a variable-to-function edge would collide with `reads_var` |
+| Unknown callees | a callee without a definition: result depends on all arguments (INFERRED); `memcpy`-like known out parameters handled; other `&x` arguments give no edge |
+| B4 function pointers | `indirect_call` edges (INFERRED, `via` = holder like `tab.run`, `s.init`, `g_cb`, `parameter 0`). Sources: initialisers of tables and variables (positional and designated `.run = B`), assignments (`s.init = B`), local pointers, functions passed as arguments (`Reg(A)`: parameter of `Reg` holds A). Field aware: `tab[i].run()` only reaches what `.run` holds. Also added to `call_sequence` with context `ptr` |
+| Docs (Obsidian, single file, html) | access tables get a **When** column; variable page: **Derived from**, **Used to compute**, **Signal trace** (levels 1-4, built in the browser for the html); function page: **Variables passed to the callees**, calls through pointers in the call order; CAN signal page: **Derived signals** (trace from the variable the getter fills) |
+| Tests | `tests/test_clang_flow.py` (11): ten locals over three functions, out parameter, callee writes a global, control dependency, no false/backward edges, unknown callee + recursion, call arguments, access context, function pointers, notes, html data and pages (playwright) |
+| Limits | no pointer aliasing (`q = &t`), flow-insensitive (a local assigned twice keeps both sources), a struct or array counts as one variable, nothing through macros that hide the assignment from the AST, edge count grows with every assignment between globals (cap: 8 functions / 8 lines per edge). **Not measured on the real kku module yet** (speed and edge count) |
+| Not done | `graphify trace` command, `derived_from` in `affected` / `query` defaults (relation registered, `affected=False`), struct member level (A2) |
+

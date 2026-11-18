@@ -18,10 +18,10 @@ Status 2026-11-18. Ideas only, nothing implemented. Effort: S = hours, M = days,
 
 | # | Idea | Graph change | Effort | Status |
 |---|---|---|---|---|
-| B1 | Condition on reads / writes (`if`, `?:`, loop) | edge property `ctx` on `reads_var` / `writes_var` | S-M | explored, see below |
-| B2 | Assigned expression (`x = a + b*k`) | `derived_from` edges variable -> variable | M | explored, see below |
-| B3 | Call arguments to variables (`f(y)`, `f(&x)`) | `passes_arg` edges with parameter index, data flow across functions | M | explored, see below |
-| B4 | Function pointers and callback tables | resolved `indirect_call` edges | M | |
+| B1 | Condition on reads / writes (`if`, `?:`, loop) | edge property `ctx` on `reads_var` / `writes_var` | S-M | **done 2026-11-18** (tracker §59) |
+| B2 | Assigned expression (`x = a + b*k`) | `derived_from` edges variable -> variable | M | **done 2026-11-18** (tracker §59) |
+| B3 | Call arguments to variables (`f(y)`, `f(&x)`) | argument variables on the `calls` edge + data flow across functions (no separate `passes_arg` edge, see tracker §59) | M | **done 2026-11-18** (tracker §59) |
+| B4 | Function pointers and callback tables | resolved `indirect_call` edges | M | **done 2026-11-18** (tracker §59) |
 | B5 | Task / cycle assignment from scheduler table | `runs_in` edges | M | |
 | B6 | Complexity, lines, nesting per function | node properties | S | |
 | B7 | Comments attached to symbols | description property | S | partly done (doxygen / comment meta) |

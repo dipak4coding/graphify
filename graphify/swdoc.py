@@ -155,6 +155,33 @@ class _Model:
                     todo.append(t)
         return len(seen) - 1
 
+    def derived_of(self, v) -> list:
+        """[(variable it takes its value from, edge)] (derived_from edges from the clang data-flow pass)."""
+        return [(e["target"], e) for e in self.out[v] if e.get("relation") == "derived_from" and self.t(e["target"]) == "variable"]
+
+    def feeds_of(self, v) -> list:
+        """[(variable computed from v, edge)]."""
+        return [(e["source"], e) for e in self.inn[v] if e.get("relation") == "derived_from" and self.t(e["source"]) == "variable"]
+
+    def trace(self, v, depth: int = 4, cap: int = 60) -> list:
+        """Everything computed from v, level by level: [(level, variable, edge, from variable)]. Breadth first, each variable once."""
+        seen, out, level = {v}, [], [v]
+        for lv in range(1, depth + 1):
+            nxt = []
+            for src in level:
+                for x, e in sorted(self.feeds_of(src), key=lambda t: self.label(t[0]).lower()):
+                    if x in seen:
+                        continue
+                    seen.add(x)
+                    out.append((lv, x, e, src))
+                    nxt.append(x)
+                    if len(out) >= cap:
+                        return out
+            level = nxt
+            if not level:
+                break
+        return out
+
     def doxygen(self, i) -> str:
         from graphify.comments import fix_mojibake
         return fix_mojibake(str(self.meta(i).get("doxygen") or ""))
@@ -199,13 +226,73 @@ class _Ctx:
         return shown + (f" +{len(ids) - limit} more" if len(ids) > limit else "")
 
 
-CTX_TEXT = {"if": "if", "else": "else", "loop": "repeated (loop)", "switch": "switch", "?:": "?: (one of two)",
+CTX_TEXT = {"always": "always", "ptr": "through a function pointer", "if": "if", "else": "else", "loop": "repeated (loop)", "switch": "switch", "?:": "?: (one of two)",
             "&&": "only if the left side is true (&&)", "||": "only if the left side is false (||)"}
 
 
 def _ctx_text(ctx: str) -> str:
     parts = [CTX_TEXT.get(x, x) for x in ctx.split(" > ") if x]
     return " > ".join(parts)
+
+
+def _when(e) -> str:
+    """When an access happens: 'always', or the conditions it sits in. '' for graphs extracted before this was recorded."""
+    ctx = (e or {}).get("metadata", {}).get("ctx") if isinstance((e or {}).get("metadata"), dict) else None
+    if not ctx:
+        return ""
+    if "always" in ctx:
+        return "always" if len(ctx) == 1 else "always, " + ", ".join(_ctx_text(x) for x in ctx if x != "always")
+    return ", ".join(_ctx_text(x) for x in ctx)
+
+
+def _flow_kind(e) -> str:
+    md = (e or {}).get("metadata") if isinstance((e or {}).get("metadata"), dict) else {}
+    kind = "condition only" if md.get("control_only") else "value"
+    return kind + (" (inferred)" if (e or {}).get("confidence") == "INFERRED" else "")
+
+
+def _flow_via(c: "_Ctx", e) -> str:
+    md = (e or {}).get("metadata") if isinstance((e or {}).get("metadata"), dict) else {}
+    fns = [f for f in md.get("functions", []) if f in c.M.nodes]
+    return c.many(fns, 4) if fns else ""
+
+
+def flow_sections(c: "_Ctx", v: str) -> list:
+    """Derived from / Used to compute / trace of a variable (empty when the graph has no data-flow edges for it)."""
+    M, out = c.M, []
+    der, fed = M.derived_of(v), M.feeds_of(v)
+    key = lambda t: M.label(t[0]).lower()
+    if der:
+        out += ["### Derived from", "", "*Variables whose value (or whose condition) decides this variable. Locals and function "
+                "calls in between are followed.*", ""] + _table(["Variable", "Kind", "In function", "At"],
+            [[_raw(c.link(x)), _flow_kind(e), _raw(_flow_via(c, e)), _raw(c.at(e))] for x, e in sorted(der, key=key)[:MAX_ROWS]])
+    if fed:
+        out += ["### Used to compute", "", "*Variables computed from this one (directly).*", ""] + _table(
+            ["Variable", "Kind", "In function", "At"],
+            [[_raw(c.link(x)), _flow_kind(e), _raw(_flow_via(c, e)), _raw(c.at(e))] for x, e in sorted(fed, key=key)[:MAX_ROWS]])
+        tr = M.trace(v)
+        if len(tr) > len(fed):
+            out += ["### Signal trace (where the value ends up)", "", "*Level 1 = computed from this variable, level 2 = computed "
+                    "from level 1, and so on (up to level 4).*", ""] + _table(
+                ["Level", "Variable", "Computed from", "Kind", "In function"],
+                [[lv, _raw(c.link(x)), _raw(c.link(src)), _flow_kind(e), _raw(_flow_via(c, e))] for lv, x, e, src in tr])
+    return out
+
+
+def call_arg_rows(c: "_Ctx", f: str) -> list:
+    """[callee, at, arguments] rows: which variables the function hands to each callee (from the `calls` edge metadata)."""
+    M, rows = c.M, []
+    for e in M.out[f]:
+        if e.get("relation") != "calls":
+            continue
+        md = e.get("metadata") if isinstance(e.get("metadata"), dict) else {}
+        for site in md.get("args") or []:
+            parts = []
+            for j, vs in sorted((site.get("args") or {}).items(), key=lambda kv: int(kv[0])):
+                parts.append(f"arg {int(j) + 1}: " + ", ".join(c.link(x) for x in vs if x in M.nodes))
+            if parts:
+                rows.append([_raw(c.link(e["target"])), f"`L{site.get('line', '')}`", _raw("; ".join(parts))])
+    return rows
 
 
 def call_sequence_lines(c: "_Ctx", f, limit: int = 80) -> list:
@@ -379,8 +466,15 @@ def function_note(c: _Ctx, f: str) -> str:
 
     # ---- inputs
     out += ["### 1 · Inputs", ""]
+    wh = any(_when(M.edge(f, v, rel)) for rel in (READ, WRITE) for v in reads + writes)
+
+    def with_when(vs, rel):
+        head = SIGNAL_HEAD + (["When"] if wh else [])
+        return head, [_signal_row(c, v) + ([_when(M.edge(f, v, rel))] if wh else []) for v in vs[:MAX_ROWS]]
+
     if reads:
-        out += ["#### Variables read", ""] + _table(SIGNAL_HEAD, [_signal_row(c, v) for v in reads[:MAX_ROWS]])
+        h_, r_ = with_when(reads, READ)
+        out += ["#### Variables read", ""] + _table(h_, r_)
     if cals:
         out += ["#### Calibrations read", ""] + _table(SIGNAL_HEAD, [_signal_row(c, k) for k in cals[:MAX_ROWS]])
         mi = _map_inputs(c, cals)
@@ -400,10 +494,14 @@ def function_note(c: _Ctx, f: str) -> str:
     # ---- outputs
     out += ["### 3 · Outputs", ""]
     if writes:
-        out += ["#### Variables written", ""] + _table(SIGNAL_HEAD, [_signal_row(c, v) for v in writes[:MAX_ROWS]])
+        h_, r_ = with_when(writes, WRITE)
+        out += ["#### Variables written", ""] + _table(h_, r_)
     if callees:
         seq = call_sequence_lines(c, f)
         out += (["#### Calls (in execution order)", ""] + seq) if seq else ["#### Calls", "", c.many(callees, 20), ""]
+        ar = call_arg_rows(c, f)
+        if ar:
+            out += ["#### Variables passed to the callees", ""] + _table(["Callee", "At", "Arguments"], ar[:MAX_ROWS])
     if not writes and not callees:
         out += ["*(writes no variable, calls nothing)*", ""]
 
@@ -508,8 +606,11 @@ def variable_note(c: _Ctx, v: str) -> str:
             ["Message", "Signal", "Unit", "Value / enum table", "Signal index", "Getter"], rows)
     for title, ids, rel in (("Written by", writers, WRITE), ("Read by", readers, READ)):
         if ids:
-            out += [f"### {title}", ""] + _table(["Function", "At", "Summary"],
-                    [[_raw(c.link(w)), _raw(c.at(M.edge(w, v, rel) or {})), M.doc_summary(w)] for w in ids[:MAX_ROWS]])
+            wh = any(_when(M.edge(w, v, rel)) for w in ids)
+            out += [f"### {title}", ""] + _table(["Function", "At", "Summary"] + (["When"] if wh else []),
+                    [[_raw(c.link(w)), _raw(c.at(M.edge(w, v, rel) or {})), M.doc_summary(w)] + ([_when(M.edge(w, v, rel))] if wh else [])
+                     for w in ids[:MAX_ROWS]])
+    out += flow_sections(c, v)
     if m.get("address_taken"):
         out += ["> [!warning] Address taken - may also be written through a pointer", ""]
     return "\n".join(out + _footer(c, v, []))
@@ -803,7 +904,10 @@ def can_data(M: "_Model") -> dict | None:
                 em = (M.edge(sid, v, {"carried_in"}) or {}).get("metadata") or {}
                 lk.append({"var": v, "label": M.label(v), "index": em.get("index"), "getter": em.get("getter") or "",
                            "line": em.get("getter_line"), "file": em.get("getter_file") or "",
-                           "readers": M.sources(v, READ, ("function",)), "writers": M.sources(v, WRITE, ("function",))})
+                           "readers": M.sources(v, READ, ("function",)), "writers": M.sources(v, WRITE, ("function",)),
+                           "trace": [{"level": lv, "id": x, "label": M.label(x), "from": M.label(src), "kind": _flow_kind(e),
+                                      "functions": [M.label(f) for f in (e.get("metadata") or {}).get("functions", []) if f in M.nodes][:4]}
+                                     for lv, x, e, src in M.trace(v)]})
             sigs.append({"name": M.label(sid), "vars": [(v, M.label(v)) for v in cv], "links": lk, "desc": str(M.nodes[sid].get("rationale") or ""),
                          "start": sm.get("start_bit"), "len": sm.get("length"), "order": order,
                          "signed": bool(sm.get("signed")), "factor": sm.get("factor"), "offset": sm.get("offset"),
@@ -885,6 +989,13 @@ def can_signal_note(d: dict, m: dict, g: dict, mstem: str, var_stems: dict | Non
             fl = [f for f in lk.get(key, [])][:40]
             if fl:
                 out += [f"**{title}:** " + ", ".join(f"[[{vs[f]}]]" if f in vs else f"`{f}`" for f in fl), ""]
+        if lk.get("trace"):
+            out += ["## Derived signals (where the value goes after the variable is filled)", "",
+                    "*Level 1 = computed from the CAN variable, level 2 = computed from level 1, and so on. Plausibility checks, "
+                    "debouncing and filters show up as the functions in the last column.*", ""] + _table(
+                ["Level", "Variable", "Computed from", "Kind", "In function"],
+                [[t["level"], _raw(f"[[{vs[t['id']]}]]" if t["id"] in vs else f"`{t['label']}`"),
+                  _raw(f"`{t['from']}`"), t["kind"], _raw(", ".join(f"`{x.rstrip('()')}`" for x in t["functions"]))] for t in lk["trace"]])
     out += ["> [!info] Source: the DBC (layout, scaling) and the signal configuration of the code (variable).", "",
             "## My notes", "", USER_BLOCK]
     return "\n".join(out)

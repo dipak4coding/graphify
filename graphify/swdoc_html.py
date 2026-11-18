@@ -82,7 +82,28 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
         out = []
         for t in M.targets(f, rels, kinds):
             if t in idx and t not in plumbing:
-                out.append([idx[t], _loc(M.edge(f, t, rels) or {})])
+                e = M.edge(f, t, rels) or {}
+                out.append([idx[t], _loc(e), S._when(e)])
+        return out
+
+    def call_args(f):                                  # [[callee, [[line, {arg: [variable]}]]]]
+        out = []
+        for e in M.out[f]:
+            md = e.get("metadata") if isinstance(e.get("metadata"), dict) else {}
+            if e.get("relation") == "calls" and md.get("args") and e["target"] in idx:
+                sites = [[x.get("line", 0), {j: ids(vs) for j, vs in (x.get("args") or {}).items() if ids(vs)}] for x in md["args"]]
+                sites = [x for x in sites if x[1]]
+                if sites:
+                    out.append([idx[e["target"]], sites])
+        return out
+
+    def flow_edges(v):                                 # [[variable, kind, [functions], line]] this variable is derived from
+        out = []
+        for x, e in sorted(M.derived_of(v), key=lambda t: M.label(t[0]).lower()):
+            if x in idx and x not in plumbing:
+                md = e.get("metadata") if isinstance(e.get("metadata"), dict) else {}
+                out.append([idx[x], 1 if md.get("control_only") else 0, 1 if e.get("confidence") == "INFERRED" else 0,
+                            ids(md.get("functions") or []), _loc(e)])
         return out
 
     items = []
@@ -100,6 +121,9 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
                        "ca": ids(M.targets(n, {S.CAL_READ}, ("calibration_field",))),
                        "cl": ids(M.targets(n, CALL, ("function",))), "cb": ids(M.sources(n, CALL, ("function",)))})
             it["n"] = re.sub(r"\(\)$", "", M.label(n))
+            ca_ = call_args(n)
+            if ca_:
+                it["ar"] = ca_                             # variables handed to the callees
             sq = [[idx[cid], line, S._ctx_text(ctx)] for cid, line, ctx in M.call_sequence(n) if cid in idx]
             if sq:
                 it["sq"] = sq                              # calls in execution order: [callee, line, context]
@@ -118,9 +142,12 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
         elif t == "variable":
             m = M.meta(n)
             it.update({"t": "v", "n": M.label(n), "st": m.get("storage") or "", "di": m.get("defined_in") or "",
-                       "wr": [[idx[w], _loc(M.edge(w, n, WRITE) or {})] for w in M.sources(n, WRITE, ("function",)) if w in idx],
-                       "rd": [[idx[r], _loc(M.edge(r, n, READ) or {})] for r in M.sources(n, READ, ("function",)) if r in idx],
+                       "wr": [[idx[w], _loc(M.edge(w, n, WRITE) or {}), S._when(M.edge(w, n, WRITE))] for w in M.sources(n, WRITE, ("function",)) if w in idx],
+                       "rd": [[idx[r], _loc(M.edge(r, n, READ) or {}), S._when(M.edge(r, n, READ))] for r in M.sources(n, READ, ("function",)) if r in idx],
                        "at": 1 if m.get("address_taken") else 0})
+            df = flow_edges(n)
+            if df:
+                it["df"] = df                              # derived from (the reverse "used to compute" is built in the browser)
             it.update(_facts(c, n))
         elif t == "calibration_field":
             links = [l for l in M.links.get(n, []) if l["kind"] == "char"]
@@ -253,6 +280,20 @@ function sigTable(ids,extra){ // Name, Description, Range, Value / enum table, U
  if(!ids.length)return '';const head=['Name','Description','Range','Value / enum table','Unit'].concat(extra?extra.head:[]);
  return table(head,ids.slice(0,400).map(id=>{const x=IT[id];let nm=A(id);if(x.t==='c'&&x.a2l&&x.a2l.length)nm+=`<br><code>${esc(x.a2l[0].n)}</code>`+(x.a2l.length>1?' +'+(x.a2l.length-1):'');
   return [nm,esc(x.d||x.s||''),esc(x.r||''),valCell(x,id),esc(x.u||'')].concat(extra?extra.row(id):[])})) + (ids.length>400?`<p class="mut">+${ids.length-400} more</p>`:'')}
+// ---------- data flow: variables derived from other variables (built once from the "df" lists) ----------
+const FD=new Map();IT.forEach((x,i)=>{(x.df||[]).forEach(d=>{if(!FD.has(d[0]))FD.set(d[0],[]);FD.get(d[0]).push([i,d])})});
+const kindTxt=d=>(d[1]?'condition only':'value')+(d[2]?' (inferred)':'');
+const flowRow=(v,d)=>[A(v),kindTxt(d),list(d[3],4),d[4]?`<code>${esc(d[4])}</code>`:''];
+function traceRows(id,depth,cap){const seen=new Set([id]),out=[];let lvl=[id];
+ for(let l=1;l<=depth&&lvl.length&&out.length<cap;l++){const nxt=[];
+  for(const s of lvl){for(const [x,d] of (FD.get(s)||[]).slice().sort((a,b)=>IT[a[0]].n.toLowerCase()<IT[b[0]].n.toLowerCase()?-1:1)){if(seen.has(x))continue;seen.add(x);out.push([l,x,d,s]);nxt.push(x);if(out.length>=cap)return out}}
+  lvl=nxt}return out}
+function flowHtml(id){const x=IT[id];let h='';const fd=FD.get(id)||[];
+ if(x.df&&x.df.length)h+=`<h3>Derived from</h3><p class="mut">Variables whose value (or whose condition) decides this variable. Local variables and function calls in between are followed.</p>`+table(['Variable','Kind','In function','At'],x.df.map(d=>flowRow(d[0],d)));
+ if(fd.length){h+=`<h3>Used to compute</h3><p class="mut">Variables computed from this one (directly).</p>`+table(['Variable','Kind','In function','At'],fd.map(([v,d])=>flowRow(v,d)));
+  const tr=traceRows(id,4,80);if(tr.length>fd.length)h+=`<h3>Signal trace (where the value ends up)</h3><p class="mut">Level 1 = computed from this variable, level 2 = computed from level 1, and so on (up to level 4). Plausibility checks, debouncing and filters show up as the functions in the last column.</p>`+table(['Level','Variable','Computed from','Kind','In function'],tr.map(([l,v,d,s])=>[l,A(v),A(s),kindTxt(d),list(d[3],4)]))}
+ return h}
+const whenCell=w=>w?(w==='always'?'always':`<span class="ctx">${esc(w)}</span>`):'';
 const list=(ids,max)=>ids.length?ids.slice(0,max||40).map(i=>A(i)).join(', ')+(ids.length>(max||40)?` +${ids.length-(max||40)} more`:''):'<span class="mut">-</span>';
 
 // ---------- layered call flow (SVG) ----------
@@ -321,7 +362,8 @@ function pageSig(k,gi){const m=D.can&&D.can.m[k],g=m&&m.g[gi];if(!g){main.innerH
  h+=`<h3>C variable (where the CAN value is stored)</h3>`;
  if(!g.v.length)h+=`<p class="mut">Not linked to a variable (no row in the signal configuration table, or no getter call found).</p>`;
  g.v.forEach(([i,l,ix,gt])=>{h+=table(['Variable','Signal index','Getter'],[[i>=0?A(i):`<code>${esc(l)}</code> <span class="mut">(not in the exported scope)</span>`,esc(ix),`<code>${esc(gt)}</code>`]]);
-  if(i>=0){const x=IT[i];if(x.wr.length)h+=`<h4>Written by</h4><p>${list(x.wr.map(r=>r[0]),40)}</p>`;if(x.rd.length)h+=`<h4>Read by</h4><p>${list(x.rd.map(r=>r[0]),60)}</p>`}});
+  if(i>=0){const x=IT[i];if(x.wr.length)h+=`<h4>Written by</h4><p>${list(x.wr.map(r=>r[0]),40)}</p>`;if(x.rd.length)h+=`<h4>Read by</h4><p>${list(x.rd.map(r=>r[0]),60)}</p>`;
+   const tr=traceRows(i,4,80);if(tr.length)h+=`<h3>Derived signals (where the value goes after the variable is filled)</h3><p class="mut">Level 1 = computed from the CAN variable, level 2 = computed from level 1, and so on. Plausibility checks, debouncing and filters show up as the functions in the last column.</p>`+table(['Level','Variable','Computed from','Kind','In function'],tr.map(([l,v,d,s])=>[l,A(v),A(s),kindTxt(d),list(d[3],4)]))}});
  main.innerHTML=h}
 function pageMsg(k){const m=D.can.m[k];if(!m){main.innerHTML='<p>Unknown message.</p>';return}
  let h=`<h2>${esc(m.n)}</h2><div class="meta"><span class="tag">CAN message</span><a href="#can">CAN</a> &middot; <code>${esc(m.h)}</code> &middot; DLC ${m.l}`+(m.y?` &middot; ${m.y} ms`:'')+` &middot; sender ${esc(m.s.join(', ')||'-')}`+(m.d==='TX'||m.d==='RX'?` &middot; <b>${m.d}</b> for ${esc(D.can.ecu)}`:'')+`</div>`;
@@ -361,12 +403,14 @@ function pageItem(id){
   (x.cb||[]).slice(0,25).forEach(i=>edges.push([nd(i),'me']));x.cl.slice(0,25).forEach(i=>edges.push(['me',nd(i)]));
   if(nodes.length>1)h+=`<h3>Call flow</h3>`+flow(nodes,edges);
   h+=`<h3>Inputs</h3>`;
-  if(x.rd.length)h+=`<h4>Variables read</h4>`+sigTable(x.rd.map(r=>r[0]),{head:['At'],row:id=>[`<code>${esc((x.rd.find(r=>r[0]===id)||[])[1]||'')}</code>`]});
+  const wh=x.rd.concat(x.wr).some(r=>r[2]);
+  if(x.rd.length)h+=`<h4>Variables read</h4>`+sigTable(x.rd.map(r=>r[0]),{head:wh?['At','When']:['At'],row:id=>{const r=x.rd.find(q=>q[0]===id)||[];return wh?[`<code>${esc(r[1]||'')}</code>`,whenCell(r[2])]:[`<code>${esc(r[1]||'')}</code>`]}});
   if(x.ca.length)h+=`<h4>Calibrations read</h4>`+sigTable(x.ca)+mapInputs(x.ca);
   if(!x.rd.length&&!x.ca.length)h+=`<p class="mut">reads no variable or calibration</p>`;
   h+=`<h4>Callers</h4><p>${list(x.cb||[],60)}</p><h3>Outputs</h3>`;
-  h+=x.wr.length?`<h4>Variables written</h4>`+sigTable(x.wr.map(r=>r[0]),{head:['At'],row:id=>[`<code>${esc((x.wr.find(r=>r[0]===id)||[])[1]||'')}</code>`]}):'<p class="mut">writes no variable</p>';
+  h+=x.wr.length?`<h4>Variables written</h4>`+sigTable(x.wr.map(r=>r[0]),{head:wh?['At','When']:['At'],row:id=>{const r=x.wr.find(q=>q[0]===id)||[];return wh?[`<code>${esc(r[1]||'')}</code>`,whenCell(r[2])]:[`<code>${esc(r[1]||'')}</code>`]}}):'<p class="mut">writes no variable</p>';
   if(x.cl.length){const sq=seqOf(id);h+=`<h4>Calls in execution order</h4><ol>${sq.slice(0,150).map(s=>`<li>${seqLine(s)}</li>`).join('')}</ol>`+(sq.length>150?`<p class="mut">+${sq.length-150} more calls</p>`:'')+(x.sq?'':'<p class="mut">The order was not recorded in this graph (re-run the clang extraction); the list is alphabetical.</p>')
+   +(x.ar?`<h4>Variables passed to the callees</h4>`+table(['Callee','At','Arguments'],x.ar.flatMap(([cl,sites])=>sites.map(([ln,a])=>[A(cl),ln?`<code>L${ln}</code>`:'',Object.keys(a).sort((p,q)=>p-q).map(j=>`arg ${+j+1}: ${list(a[j],6)}`).join('; ')]))):'')
    +`<h3>Execution trace</h3><p class="mut">All calls below this function in code order. Open a call to see what it calls. Dashed tags: conditional or repeated calls.</p>`+traceBlock(id)}}
  else if(x.t==='b'){const cb=CB.get(id)||[];h=head(x,id,' &middot; not part of the exported scope')+docBlock(x)+`<h3>Called by</h3><p>${list(cb,80)}</p>`}
  else if(x.t==='v'){
@@ -374,8 +418,8 @@ function pageItem(id){
   h+=`<h3>A2L</h3>`+table(['Description','Range','Value / enum table','Unit'],[[esc(x.d||''),esc(x.r||''),valCell(x,id),esc(x.u||'')]]);
   if(x.cn&&D.can)h+=`<h3>CAN signal</h3><p class="mut">Filled by the getter in the signal reader function (signal index and variable from the project's signal configuration).</p>`+table(['Message','Signal','Unit','Value / enum table'],x.cn.map(([k,gi])=>{const m=D.can.m[k],g=m.g[gi],ks=Object.keys(g.e||{});return [`<a href="#m/${k}">${esc(m.n)}</a>`,`<a href="#s/${k}/${gi}"><b>${esc(g.n)}</b></a>`,esc(g.u),ks.length?`<span class="enum">${esc(ks.slice(0,8).map(q=>q+'='+g.e[q]).join('; '))}</span>`:'']}));
   if(x.at)h+=`<div class="warn">Address taken - may also be written through a pointer.</div>`;
-  const fr=(a)=>table(['Function','At','Summary'],a.map(([f,l])=>[A(f),`<code>${esc(l)}</code>`,esc(IT[f].s||'')]));
-  h+=`<h3>Written by</h3>`+(x.wr.length?fr(x.wr):'<p class="mut">no writer found (pointer write, inactive #ifdef, outside the compile DB, or external input)</p>')+`<h3>Read by</h3>`+(x.rd.length?fr(x.rd):'<p class="mut">no reader</p>')}
+  const fr=(a)=>{const w=a.some(r=>r[2]);return table(['Function','At','Summary'].concat(w?['When']:[]),a.map(([f,l,wn])=>[A(f),`<code>${esc(l)}</code>`,esc(IT[f].s||'')].concat(w?[whenCell(wn)]:[])))};
+  h+=`<h3>Written by</h3>`+(x.wr.length?fr(x.wr):'<p class="mut">no writer found (pointer write, inactive #ifdef, outside the compile DB, or external input)</p>')+`<h3>Read by</h3>`+(x.rd.length?fr(x.rd):'<p class="mut">no reader</p>')+flowHtml(id)}
  else if(x.t==='c'){
   h=head(x,id,x.ac?` &middot; via <code>${esc(x.ac)}</code>`:'')+docBlock(x);
   if(x.parent!=null)h+=`<div class="warn">Member of the struct ${A(x.parent)} (read as a whole in the code; this member is inferred from the header type).</div>`;

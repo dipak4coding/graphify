@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from graphify.extractors.base import _file_stem
+from graphify.extractors.clang_flow import FlowRecorder
 from graphify.ids import make_id
 from graphify.relations import context_for
 
@@ -86,6 +87,7 @@ class ClangConfig:
     append_args: list = field(default_factory=list)  # always appended, e.g. ["-DTRICORE=1", "--target=arm-none-eabi"]
     extractor: str = "both"  # treesitter | clang | both  (clang = replace tree-sitter's C output)
     header_declarations: bool = True  # also add `extern` variables / function prototypes declared in headers (file --contains--> symbol)
+    data_flow: bool = True  # derived_from edges (variable -> variable it is computed from), call argument variables, indirect_call edges (function pointers)
     parse_comments: bool = False  # INACTIVE by default: also split function comments into summary/comment/comment_params/comment_returns (the raw `doxygen` text is always stored)
     debug: bool = False  # verbose log to stderr + graphify-out/clang_debug.log + clang_report.json
     source: str = "defaults"  # where the config came from (for the debug log)
@@ -108,7 +110,7 @@ def set_runtime_config(**kwargs) -> None:
 
 def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
     cfg = ClangConfig(base_dir=str(base_dir))
-    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "par", "par_name", "debug", "header_declarations", "parse_comments"):
+    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "par", "par_name", "debug", "header_declarations", "parse_comments", "data_flow"):
         if key in data:
             setattr(cfg, key, data[key])
     if "extractor" in data:
@@ -380,6 +382,8 @@ _INT_BINOPS = {"+": lambda a, b: a + b, "-": lambda a, b: a - b, "*": lambda a, 
                "<<": lambda a, b: a << b}
 _MAX_LINES_PER_EDGE = 8
 _LIST_META = ("index", "mask")   # edge metadata kept as a list of distinct values (calibration index text, bit mask)
+_CTX_RELS = ("reads_var", "writes_var", "reads_calibration_field")   # edges that remember the control context of each access
+_MAX_CTX_VALUES = 6
 
 def split_index_groups(path: str):
     """`.a[x[1].s.F][2].b` -> ('.a.b', ['[x[1].s.F]', '[2]']). Brackets are matched in pairs, so an index
@@ -448,6 +452,7 @@ class ClangExtractor:
         self.ptr_to_rom: dict = {}
         self.can_rows: list = []          # config table rows: {index, name, file, line}
         self.can_calls: list = []         # getter calls in the reader function: {index, var, getter, file, line}
+        self.flow = FlowRecorder(self) if cfg.data_flow else None
         self._leaf_cache: dict = {}
         self._leaf_docs: dict = {}      # struct type spelling -> {relative member path: raw doxygen comment}
         self.ptr_maps: dict = {}  # rel file -> {ptr: rom} (for the incremental cache)
@@ -536,12 +541,18 @@ class ClangExtractor:
             return
         key = (src, tgt, relation)
         edge = self.edges.get(key)
+        ctxv = None
+        if relation in _CTX_RELS:                        # B1: "always" or the enclosing if / else / loop / switch / ?: / &&
+            meta_ctx = (metadata or {}).get("ctx")
+            ctxv = (meta_ctx if meta_ctx is not None else " > ".join(self._ctx[-3:])) or "always"
         if edge is None:
             edge = {
                 "source": src, "target": tgt, "relation": relation, "confidence": confidence,
                 "source_file": self.sf(source_file) if source_file else "",
-                "weight": 1.0, "metadata": dict(metadata or {}),
+                "weight": 1.0, "metadata": {k: v for k, v in (metadata or {}).items() if k != "ctx"},
             }
+            if ctxv is not None:
+                edge["metadata"]["ctx"] = [ctxv]
             for k in _LIST_META:
                 if k in edge["metadata"]:
                     edge["metadata"][k] = [edge["metadata"][k]]
@@ -553,6 +564,10 @@ class ClangExtractor:
                 edge["metadata"]["lines"] = [line]
             self.edges[key] = edge
         else:
+            if ctxv is not None:
+                cl = edge["metadata"].setdefault("ctx", [])
+                if ctxv not in cl and len(cl) < _MAX_CTX_VALUES:
+                    cl.append(ctxv)
             for k in _LIST_META:
                 if metadata and k in metadata:
                     vals = edge["metadata"].setdefault(k, [])
@@ -704,7 +719,8 @@ class ClangExtractor:
             else:
                 var_id = self._global_var(item[1], sfile)
                 self.pending_binds.append({"fn": fn_id, "callee": callee_id, "name": callee_name, "arg": i,
-                                           "var": var_id, "line": line, "file": sfile, "addr": item[3]})
+                                           "var": var_id, "line": line, "file": sfile, "addr": item[3],
+                                           "ctx": " > ".join(self._ctx[-3:])})
                 for x in item[2]:
                     self.walk(x, fn_id, sfile)
         return True
@@ -746,9 +762,9 @@ class ClangExtractor:
                 r = True                                       # the callee ignores the parameter: keep the old default
             if w:
                 self.add_edge(b["fn"], b["var"], "writes_var", b["file"], b["line"],
-                              metadata={"via_call": b["name"] or "", "out_param": True})
+                              metadata={"via_call": b["name"] or "", "out_param": True, "ctx": b.get("ctx", "")})
             if r or u:
-                self.add_edge(b["fn"], b["var"], "reads_var", b["file"], b["line"])
+                self.add_edge(b["fn"], b["var"], "reads_var", b["file"], b["line"], metadata={"ctx": b.get("ctx", "")})
                 if u and b["addr"]:
                     self.edges[(b["fn"], b["var"], "reads_var")]["metadata"]["address_taken"] = True
         for fid, fx in self.param_fx.items():
@@ -1471,6 +1487,8 @@ class ClangExtractor:
             self.param_fx[func_id] = {i: {"w": False, "r": False, "u": False, "fwd": set()} for i in self._cur_params.values()}
             for child in cursor.get_children():
                 self.walk(child, func_id, fpath)
+            if self.flow is not None:
+                self.flow.record_function(cursor, func_id, fpath)
             self._cur_fn_id, self._cur_params = saved
             return
 
@@ -1526,6 +1544,8 @@ class ClangExtractor:
             if self._is_var_definition(cursor):
                 # `static int x;`, `int x;` (tentative definition) and `int x = 1;` all DEFINE x
                 self._mark_var_definition(self._global_var(cursor, sfile), cursor, sfile)
+                if self.flow is not None:
+                    self.flow.record_global_init(cursor, sfile)
             elif self.cfg.header_declarations:  # `extern T x;` in a header: file --contains--> variable
                 self._global_var(cursor, sfile)
             else:
@@ -1726,6 +1746,36 @@ class ClangExtractor:
 
     # ---- finalize -----------------------------------------------------------------------
 
+    def _add_flow_edges(self, edges: dict, remap: dict) -> None:
+        """derived_from (data flow), `calls` argument variables and indirect_call (function pointers)."""
+        derived, arg_sites, indirect = self.flow.edges(remap, self.nodes)
+        for e in derived:
+            edges.setdefault((e["source"], e["target"], "derived_from"), e)
+        for (src, tgt), sites in arg_sites.items():
+            ce = edges.get((src, tgt, "calls"))
+            if ce is not None:
+                ce["metadata"]["args"] = sites
+        n_ind = 0
+        for caller, target, line, ctx, label, sfile in indirect:
+            key = (caller, target, "indirect_call")
+            e = edges.get(key)
+            if e is None:
+                e = {"source": caller, "target": target, "relation": "indirect_call", "confidence": "INFERRED",
+                     "source_file": self.nodes[caller].get("source_file", ""), "weight": 1.0,
+                     "metadata": {"via": [label], "lines": [line]}, "source_location": f"L{line}"}
+                edges[key] = e
+                n_ind += 1
+            else:
+                md = e["metadata"]
+                if label not in md["via"] and len(md["via"]) < 5:
+                    md["via"].append(label)
+                if line not in md["lines"] and len(md["lines"]) < _MAX_LINES_PER_EDGE:
+                    md["lines"].append(line)
+            self.call_seq.setdefault(caller, []).append((line, 10 ** 6, (ctx + " > " if ctx else "") + "ptr",
+                                                         line, target))
+        LOG.info("data flow: %d derived_from edge(s), %d indirect_call edge(s), %d function(s) not analysed",
+                 len(derived), n_ind, self.flow.errors)
+
     def finalize(self):
         """-> (nodes, edges): unify decl-only symbols, collapse read+write pairs."""
         self._resolve_binds()
@@ -1754,11 +1804,18 @@ class ClangExtractor:
                     lines = prev["metadata"].setdefault("lines", [])
                     if ln not in lines and len(lines) < _MAX_LINES_PER_EDGE:
                         lines.append(ln)
+                for cv in e["metadata"].get("ctx", []):
+                    cl = prev["metadata"].setdefault("ctx", [])
+                    if cv not in cl and len(cl) < _MAX_CTX_VALUES:
+                        cl.append(cv)
                 if e["confidence"] == "AMBIGUOUS":
                     prev["confidence"] = "AMBIGUOUS"
             else:
                 e = dict(e, source=src, target=tgt)
                 edges[key] = e
+
+        if self.flow is not None:
+            self._add_flow_edges(edges, remap)
 
         # one edge per node pair survives graph loading: merge reads_var + writes_var
         for (src, tgt, rel) in list(edges):
@@ -1771,6 +1828,9 @@ class ClangExtractor:
             lines = sorted(set(r["metadata"].get("lines", [])) | set(w["metadata"].get("lines", [])))
             merged = dict(r, relation="reads_writes_var", context=context_for("reads_writes_var"))
             merged["metadata"] = {"lines": lines[:_MAX_LINES_PER_EDGE], "merged_from": ["reads_var", "writes_var"]}
+            ctxs = list(dict.fromkeys(list(r["metadata"].get("ctx", [])) + list(w["metadata"].get("ctx", []))))
+            if ctxs:
+                merged["metadata"]["ctx"] = ctxs[:_MAX_CTX_VALUES]
             if r["metadata"].get("address_taken") or w["metadata"].get("address_taken"):
                 merged["metadata"]["address_taken"] = True
             if lines:
