@@ -668,3 +668,17 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 | Limits | no pointer aliasing (`q = &t`), flow-insensitive (a local assigned twice keeps both sources), a struct or array counts as one variable, nothing through macros that hide the assignment from the AST, edge count grows with every assignment between globals (cap: 8 functions / 8 lines per edge). **Not measured on the real kku module yet** (speed and edge count) |
 | Not done | `graphify trace` command, `derived_from` in `affected` / `query` defaults (relation registered, `affected=False`), struct member level (A2) |
 
+
+## 60. Execution order: flow-sensitive locals, tasks, timing per step, feedback (improvements 1-4)
+
+| Part | What | Where |
+|---|---|---|
+| 1 Statement order | Locals: strong update on unconditional whole assignment (`t=Raw; t=Plaus; Y=t` -> Y from Plaus only), weak (union) otherwise; loops iterated to fixpoint (max 6) | `clang_flow.py` |
+| Self-feeding | `feeds_itself` on variables like `Acc = Acc + In` (node metadata) | `clang_c.py` |
+| 2 Timing | Step codes same cycle / next cycle / own previous value / other task / outside input; cumulative delay along trace ("1 cycle later", with ms if period known) | `swdoc_sched.py`, `swdoc.py` |
+| 3 Tasks | Task = function nobody calls (and that calls something); `--tasks "Task10=10 ms,..."` or json file names/restricts them; no schedule table needed | `swdoc_sched.py`, `run_swdoc` |
+| 4 Data order | "Reader runs before writer" list, "Data between tasks" list; pages `#t`, `#t/<k>` in HTML; Tasks section in module note | `swdoc.py`, `swdoc_html.py` |
+| Loops | Feedback loops A->B->A listed on variable pages | `swdoc.py` |
+
+Tests: 9 new in `tests/test_clang_flow.py` (20 total, incl. playwright pages). Bug found by them: `order_issues` unpacked `(var, func)` keys swapped.
+Limits: not measured on real kku module; function running several times counts at first call; merged read/write edge lines ambiguous; function pointers ordered like direct calls.

@@ -92,6 +92,8 @@ def _stem(label: str) -> str:
 # ---------------------------------------------------------------------------
 
 class _Model:
+    sched = None        # graphify.swdoc_sched.Schedule, set by build_vault
+
     def __init__(self, raw: dict):
         self.nodes = {n["id"]: n for n in raw.get("nodes", []) if n.get("id")}
         self.edges = raw.get("links", raw.get("edges", []))
@@ -182,6 +184,43 @@ class _Model:
                 break
         return out
 
+    def loops(self, v, rows: list, cap: int = 12) -> list:
+        """Feedback: steps of the trace that feed a variable already on the path back into it, [(from variable, variable, edge)]."""
+        parent = {x: src for _lv, x, _e, src in rows}
+
+        def ancestors(n):
+            seen = {n}
+            while n in parent and parent[n] not in seen:
+                n = parent[n]
+                seen.add(n)
+            return seen
+
+        out = []
+        for n in [v] + [x for _lv, x, _e, _s in rows]:
+            anc = ancestors(n)
+            for x, e in sorted(self.feeds_of(n), key=lambda t: self.label(t[0]).lower()):
+                if x in anc:
+                    out.append((n, x, e))
+                    if len(out) >= cap:
+                        return out
+        return out
+
+    def trace_timed(self, v, depth: int = 4, cap: int = 60) -> list:
+        """trace() with the timing of every step and the delay summed along the way: [dict(level, id, edge, src, code, delay)]."""
+        from graphify.swdoc_sched import DELAY, OTHER, Schedule
+        sc = getattr(self, "sched", None)
+        cum, out = {v: (0, False)}, []
+        for lv, x, e, src in self.trace(v, depth, cap):
+            code = sc.edge_timing(e) if sc is not None else None
+            cyc, oth = cum.get(src, (0, False))
+            if code is not None:
+                cyc += DELAY.get(code, 0)
+                oth = oth or code == OTHER
+            cum[x] = (cyc, oth)
+            out.append({"level": lv, "id": x, "edge": e, "src": src, "code": code,
+                        "delay": Schedule.delay_text(cyc, oth) if code is not None else ""})
+        return out
+
     def doxygen(self, i) -> str:
         from graphify.comments import fix_mojibake
         return fix_mojibake(str(self.meta(i).get("doxygen") or ""))
@@ -257,25 +296,81 @@ def _flow_via(c: "_Ctx", e) -> str:
     return c.many(fns, 4) if fns else ""
 
 
+def _timing_cell(code) -> str:
+    from graphify.swdoc_sched import TIMING_SHORT
+    return TIMING_SHORT.get(code, "") if code is not None else ""
+
+
 def flow_sections(c: "_Ctx", v: str) -> list:
-    """Derived from / Used to compute / trace of a variable (empty when the graph has no data-flow edges for it)."""
+    """Derived from / Used to compute / trace / feedback of a variable (empty when the graph has no data-flow edges for it)."""
     M, out = c.M, []
+    sc = M.sched
     der, fed = M.derived_of(v), M.feeds_of(v)
     key = lambda t: M.label(t[0]).lower()
+    tm = (lambda e: [_timing_cell(sc.edge_timing(e))]) if sc is not None else (lambda e: [])
+    th = ["Timing"] if sc is not None else []
+    itself = [f for f in M.meta(v).get("feeds_itself", []) if f in M.nodes]
+    if itself:
+        out += ["> [!info] Feeds itself", f"> The value is computed from its own previous value (state, counter or integrator) in {c.many(itself, 4)}.", ""]
     if der:
         out += ["### Derived from", "", "*Variables whose value (or whose condition) decides this variable. Locals and function "
-                "calls in between are followed.*", ""] + _table(["Variable", "Kind", "In function", "At"],
-            [[_raw(c.link(x)), _flow_kind(e), _raw(_flow_via(c, e)), _raw(c.at(e))] for x, e in sorted(der, key=key)[:MAX_ROWS]])
+                "calls in between are followed. Timing: does the writer of the source run before (same cycle) or after (next cycle) "
+                "the function that uses it.*", ""] + _table(["Variable", "Kind"] + th + ["In function", "At"],
+            [[_raw(c.link(x)), _flow_kind(e)] + tm(e) + [_raw(_flow_via(c, e)), _raw(c.at(e))] for x, e in sorted(der, key=key)[:MAX_ROWS]])
     if fed:
         out += ["### Used to compute", "", "*Variables computed from this one (directly).*", ""] + _table(
-            ["Variable", "Kind", "In function", "At"],
-            [[_raw(c.link(x)), _flow_kind(e), _raw(_flow_via(c, e)), _raw(c.at(e))] for x, e in sorted(fed, key=key)[:MAX_ROWS]])
-        tr = M.trace(v)
+            ["Variable", "Kind"] + th + ["In function", "At"],
+            [[_raw(c.link(x)), _flow_kind(e)] + tm(e) + [_raw(_flow_via(c, e)), _raw(c.at(e))] for x, e in sorted(fed, key=key)[:MAX_ROWS]])
+        tr = M.trace_timed(v)
         if len(tr) > len(fed):
             out += ["### Signal trace (where the value ends up)", "", "*Level 1 = computed from this variable, level 2 = computed "
-                    "from level 1, and so on (up to level 4).*", ""] + _table(
-                ["Level", "Variable", "Computed from", "Kind", "In function"],
-                [[lv, _raw(c.link(x)), _raw(c.link(src)), _flow_kind(e), _raw(_flow_via(c, e))] for lv, x, e, src in tr])
+                    "from level 1, and so on (up to level 4). Delay = cycles added along the shortest path.*", ""] + _table(
+                ["Level", "Variable", "Computed from"] + th + (["Delay so far"] if sc is not None else []) + ["Kind", "In function"],
+                [[t["level"], _raw(c.link(t["id"])), _raw(c.link(t["src"]))] + ([_timing_cell(t["code"]), t["delay"]] if sc is not None else [])
+                 + [_flow_kind(t["edge"]), _raw(_flow_via(c, t["edge"]))] for t in tr])
+        lp = M.loops(v, [(t["level"], t["id"], t["edge"], t["src"]) for t in tr])
+        if lp:
+            out += ["### Feedback loops", "", "*The value comes back to a variable it was computed from. The step that closes the loop "
+                    "is always delayed by at least one call of the writer.*", ""] + _table(
+                ["From", "Feeds back into", "Timing", "In function"],
+                [[_raw(c.link(a_)), _raw(c.link(x)), _timing_cell(sc.edge_timing(e)) if sc is not None else "", _raw(_flow_via(c, e))]
+                 for a_, x, e in lp])
+    return out
+
+
+def tasks_section(c: "_Ctx", funcs: list) -> list:
+    """Tasks (entry functions), execution order and data order of the functions of this component."""
+    M, sc = c.M, c.M.sched
+    if sc is None or not sc.tasks:
+        return []
+    fs = set(funcs)
+    mine = [t for t in sc.tasks if any(f in fs for f in t.order)]
+    if not mine:
+        return []
+    out = ["## Tasks and execution order", "",
+           "*A task is a function that no other function calls (the hardware calls it every N samples). Everything it calls runs in that "
+           "task, in code order. Timing statements assume this order; a function that runs several times per cycle counts at its first call."
+           + (" The call order of some functions was not recorded in this graph: re-extract for exact order." if sc.approximate else "") + "*", ""]
+    out += _table(["Task", "Period", "Functions in the task", "Of them in this component"],
+                  [[_raw(c.link(t.entry) if t.entry in fs else f"`{t.name}`"), t.period_text or "-", len(t.order),
+                    sum(1 for f in t.order if f in fs)] for t in mine[:MAX_ROWS]])
+    for t in mine[:8]:
+        inside = [f for f in t.order if f in fs]
+        out += [f"### Execution order: {t.label}", ""] + [f"{i}. {c.link(f)}" for i, f in enumerate(inside[:40], 1)]
+        if len(inside) > 40:
+            out += [f"*+{len(inside) - 40} more*"]
+        out += [""]
+    issues = sc.order_issues(fs, 60)
+    if issues:
+        out += ["### Data order: the reader runs before the writer", "",
+                "*The reader sees the value of the **previous** cycle. Fine for state and feedback; check it for signals that should be fresh.*", ""]
+        out += _table(["Variable", "Task", "Reader (runs first)", "Writer (runs later)"],
+                      [[_raw(c.link(v)), t.name, _raw(c.link(r)), _raw(c.link(w))] for v, t, r, _rt, w, _wt in issues])
+    ifs = sc.task_interfaces(fs, 60)
+    if ifs:
+        out += ["### Data between tasks", "", "*Written in one task, read in another: the reader gets the latest value whenever it runs.*", ""]
+        out += _table(["Variable", "Written in", "Read in"],
+                      [[_raw(c.link(v)), ", ".join(t.name for t in wt), ", ".join(t.name for t in rt)] for v, wt, rt in ifs])
     return out
 
 
@@ -454,6 +549,9 @@ def function_note(c: _Ctx, f: str) -> str:
     out += [f"# {name}()", "",
             f"Module: [[{c.module}]] · File: `{M.file(f)}:{M.loc(f)}`"
             + (f" · Returns: `{m['return_type']}`" if m.get("return_type") else ""), ""]
+    if M.sched is not None and M.sched.runs_in(f):
+        out += ["**Runs in task:** " + ", ".join(t.label for t in M.sched.runs_in(f)[:6])
+                + (f" +{len(M.sched.runs_in(f)) - 6} more" if len(M.sched.runs_in(f)) > 6 else ""), ""]
     out += _doc_section(c, f)
     params = m.get("parameters")
     if isinstance(params, list) and params:
@@ -839,6 +937,7 @@ def module_note(c: _Ctx, funcs: list, vars_: list, cals: list, border: list, ins
             if sp else ["*none - every function is called from somewhere*", ""])
     out += ["## Call flow", "", "Arrow = calls. A function block opens its note (click it in reading view). Boxes with rounded ends are other components (callers on the left, callees on the right).", ""]
     out += call_flow(c, funcs) + [""]
+    out += tasks_section(c, funcs)
     out += ["## Component signals", "", f"{nin} inputs (from other components) · {nout} outputs (read by other components)", ""]
     if sig["inputs"]:
         out += ["### Component inputs", ""] + _table(SIGNAL_HEAD + ["Read inside by"],
@@ -905,9 +1004,10 @@ def can_data(M: "_Model") -> dict | None:
                 lk.append({"var": v, "label": M.label(v), "index": em.get("index"), "getter": em.get("getter") or "",
                            "line": em.get("getter_line"), "file": em.get("getter_file") or "",
                            "readers": M.sources(v, READ, ("function",)), "writers": M.sources(v, WRITE, ("function",)),
-                           "trace": [{"level": lv, "id": x, "label": M.label(x), "from": M.label(src), "kind": _flow_kind(e),
-                                      "functions": [M.label(f) for f in (e.get("metadata") or {}).get("functions", []) if f in M.nodes][:4]}
-                                     for lv, x, e, src in M.trace(v)]})
+                           "trace": [{"level": t["level"], "id": t["id"], "label": M.label(t["id"]), "from": M.label(t["src"]),
+                                      "kind": _flow_kind(t["edge"]), "timing": _timing_cell(t["code"]), "delay": t["delay"],
+                                      "functions": [M.label(f) for f in (t["edge"].get("metadata") or {}).get("functions", []) if f in M.nodes][:4]}
+                                     for t in M.trace_timed(v)]})
             sigs.append({"name": M.label(sid), "vars": [(v, M.label(v)) for v in cv], "links": lk, "desc": str(M.nodes[sid].get("rationale") or ""),
                          "start": sm.get("start_bit"), "len": sm.get("length"), "order": order,
                          "signed": bool(sm.get("signed")), "factor": sm.get("factor"), "offset": sm.get("offset"),
@@ -990,12 +1090,15 @@ def can_signal_note(d: dict, m: dict, g: dict, mstem: str, var_stems: dict | Non
             if fl:
                 out += [f"**{title}:** " + ", ".join(f"[[{vs[f]}]]" if f in vs else f"`{f}`" for f in fl), ""]
         if lk.get("trace"):
+            timed = any(t.get("timing") for t in lk["trace"])
             out += ["## Derived signals (where the value goes after the variable is filled)", "",
                     "*Level 1 = computed from the CAN variable, level 2 = computed from level 1, and so on. Plausibility checks, "
-                    "debouncing and filters show up as the functions in the last column.*", ""] + _table(
-                ["Level", "Variable", "Computed from", "Kind", "In function"],
-                [[t["level"], _raw(f"[[{vs[t['id']]}]]" if t["id"] in vs else f"`{t['label']}`"),
-                  _raw(f"`{t['from']}`"), t["kind"], _raw(", ".join(f"`{x.rstrip('()')}`" for x in t["functions"]))] for t in lk["trace"]])
+                    "debouncing and filters show up as the functions in the last column. Timing / delay: same cycle or later, "
+                    "from the execution order of the task.*", ""] + _table(
+                ["Level", "Variable", "Computed from"] + (["Timing", "Delay so far"] if timed else []) + ["Kind", "In function"],
+                [[t["level"], _raw(f"[[{vs[t['id']]}]]" if t["id"] in vs else f"`{t['label']}`"), _raw(f"`{t['from']}`")]
+                 + ([t.get("timing", ""), t.get("delay", "")] if timed else [])
+                 + [t["kind"], _raw(", ".join(f"`{x.rstrip('()')}`" for x in t["functions"]))] for t in lk["trace"]])
     out += ["> [!info] Source: the DBC (layout, scaling) and the signal configuration of the code (variable).", "",
             "## My notes", "", USER_BLOCK]
     return "\n".join(out)
@@ -1044,7 +1147,7 @@ def can_notes(d: dict, var_stems: dict | None = None, cstems: tuple | None = Non
 
 
 def build_vault(raw: dict, patterns: list, exclude: list | None = None, lookup=None, dataset: str = "",
-                mermaid: bool = False, module: str | None = None, want_notes: bool = True) -> dict:
+                mermaid: bool = False, module: str | None = None, want_notes: bool = True, tasks: dict | None = None) -> dict:
     """-> {"notes": {relative path: text}, "module": name, "counts": {...}, "empty": bool}."""
     M = _Model(raw)
     pats = ["" if p.strip() in (".", "*", "/") else _norm(p) for p in patterns]      # "." / "*" = the whole software
@@ -1066,6 +1169,8 @@ def build_vault(raw: dict, patterns: list, exclude: list | None = None, lookup=N
     roms = {str(M.meta(i).get("calibration_path") or "").split(".")[0] for i in M.nodes if M.t(i) == "calibration_field"}
     plumbing = {i for i in M.nodes if M.t(i) == "variable" and (
         M.label(i) in roms or any(e.get("relation") == "exposes_calibration_field" for e in M.out[i]))}
+    from graphify.swdoc_sched import Schedule
+    M.sched = Schedule(M, plumbing, tasks)
     inside_vars = {i for i in M.nodes if M.t(i) == "variable" and inside(i)} - plumbing
     vars_ = set(inside_vars)
     cals = set()
@@ -1305,9 +1410,33 @@ class _Vault:
         return pruned
 
 
+def _read_tasks(spec):
+    """--tasks: a json file {"Entry_Function": "10 ms"} or inline 'Entry_Function=10 ms,Other=20 ms'. None = error."""
+    if not spec:
+        return {}
+    p = Path(spec)
+    try:
+        if p.is_file():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("expected an object {function: period}")
+            return data
+        out = {}
+        for part in spec.split(","):
+            name, _, per = part.partition("=")
+            if name.strip():
+                out[name.strip()] = per.strip()
+        if not out:
+            raise ValueError("no 'Function=period' pairs")
+        return out
+    except (OSError, ValueError) as exc:
+        print(f"error: --tasks {spec}: {exc}", file=sys.stderr)
+        return None
+
+
 def run_swdoc(argv: list) -> int:
     usage = ('Usage: graphify swdoc "<path substring>" [--exclude P] [--module NAME] [--graph PATH] [--out DIR]\n'
-             '         [--dataset SET] [--db PATH] [--mermaid] [--prune] [--single-file] [--html]\n'
+             '         [--dataset SET] [--db PATH] [--mermaid] [--prune] [--single-file] [--html] [--tasks FILE|"Name=10 ms,Name2=20 ms"]\n'
              '  e.g. graphify swdoc ku/kku --dataset SetA --mermaid\n'
              '       graphify swdoc . --module Software --single-file --dataset SetA   (whole software in ONE markdown file)\n'
              '       graphify swdoc . --module Software --html --dataset SetA          (whole software as ONE html file)\n'
@@ -1324,7 +1453,7 @@ def run_swdoc(argv: list) -> int:
         a, nxt = args[i], args[i + 1] if i + 1 < len(args) else None
         if a == "--exclude" and nxt:
             opts["exclude"].append(nxt); i += 1
-        elif a in ("--graph", "--out", "--dataset", "--db", "--module") and nxt:
+        elif a in ("--graph", "--out", "--dataset", "--db", "--module", "--tasks") and nxt:
             opts[a[2:]] = nxt; i += 1
         elif a == "--mermaid":
             opts["mermaid"] = True
@@ -1360,8 +1489,11 @@ def run_swdoc(argv: list) -> int:
             print(err, file=sys.stderr)
             return 1
         lookup = lambda name: params.describe(conn, dataset, name, max_cells=64, indent="", with_hint=False)  # noqa: E731
+    tasks = _read_tasks(opts.get("tasks"))
+    if tasks is None:
+        return 1
     res = build_vault(raw, opts["include"], opts["exclude"], lookup, dataset or "", opts["mermaid"], opts["module"],
-                      want_notes=not opts["html"])
+                      want_notes=not opts["html"], tasks=tasks)
     if res["empty"]:
         print(f"No function with a source file containing {opts['include']}.")
         return 0

@@ -97,13 +97,15 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
                     out.append([idx[e["target"]], sites])
         return out
 
+    sc = M.sched
+
     def flow_edges(v):                                 # [[variable, kind, [functions], line]] this variable is derived from
         out = []
         for x, e in sorted(M.derived_of(v), key=lambda t: M.label(t[0]).lower()):
             if x in idx and x not in plumbing:
                 md = e.get("metadata") if isinstance(e.get("metadata"), dict) else {}
                 out.append([idx[x], 1 if md.get("control_only") else 0, 1 if e.get("confidence") == "INFERRED" else 0,
-                            ids(md.get("functions") or []), _loc(e)])
+                            ids(md.get("functions") or []), _loc(e), sc.edge_timing(e) if sc is not None else -1])
         return out
 
     items = []
@@ -145,6 +147,9 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
                        "wr": [[idx[w], _loc(M.edge(w, n, WRITE) or {}), S._when(M.edge(w, n, WRITE))] for w in M.sources(n, WRITE, ("function",)) if w in idx],
                        "rd": [[idx[r], _loc(M.edge(r, n, READ) or {}), S._when(M.edge(r, n, READ))] for r in M.sources(n, READ, ("function",)) if r in idx],
                        "at": 1 if m.get("address_taken") else 0})
+            fs_ = [f for f in m.get("feeds_itself", []) if f in idx]
+            if fs_:
+                it["fs"] = ids(fs_)                        # computed from its own previous value (state / integrator)
             df = flow_edges(n)
             if df:
                 it["df"] = df                              # derived from (the reverse "used to compute" is built in the browser)
@@ -200,6 +205,24 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
             it["parent"] = by_path.get(it["parent"])
     sp = [[idx[f], len(M.targets(f, CALL, ("function",))), M.reach(f)] for f in S.start_points(M, funcs)]
     sp.sort(key=lambda r: (-r[2], items[r[0]]["n"].lower()))
+    tk, oi, ti = [], [], []
+    if sc is not None and sc.tasks:
+        tidx = {}
+        for t in sc.tasks:
+            inside = [f for f in t.order if f in fset]
+            if inside:
+                tidx[t] = len(tk)
+                tk.append([t.name, t.period_text, idx.get(t.entry, -1), ids(inside)[:300], len(t.order), 1 if t.truncated else 0])
+        for f in funcs:
+            rts = [tidx[t] for t in sc.runs_in(f) if t in tidx]
+            if rts:
+                items[idx[f]]["rt"] = rts[:8]
+        for v, t, r, _rt, w, _w in sc.order_issues(fset, 200):
+            if v in idx and t in tidx:
+                oi.append([idx[v], tidx[t], idx[r], idx[w]])
+        for v, wt, rt in sc.task_interfaces(fset, 200):
+            if v in idx:
+                ti.append([idx[v], [tidx[t] for t in wt if t in tidx], [tidx[t] for t in rt if t in tidx]])
     can = res.get("can")
     if can:                                       # compact keys: n name, i id, h hex, l dlc, y cycle, d dir, s senders, t text, g signals
         can = {"dbc": can["dbc"], "ecu": can["ecu"], "m": [
@@ -214,7 +237,8 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
                 for vi, *_rest in g["v"]:
                     if vi >= 0:
                         items[vi].setdefault("cn", []).append([k, gi])
-    return {"title": title, "dataset": dataset, "it": items, "comps": comps, "sp": sp, "can": can}
+    return {"title": title, "dataset": dataset, "it": items, "comps": comps, "sp": sp, "can": can,
+            "tk": tk, "oi": oi, "ti": ti, "ap": 1 if (sc is not None and sc.approximate) else 0}
 
 
 def render(data: dict) -> str:
@@ -283,15 +307,25 @@ function sigTable(ids,extra){ // Name, Description, Range, Value / enum table, U
 // ---------- data flow: variables derived from other variables (built once from the "df" lists) ----------
 const FD=new Map();IT.forEach((x,i)=>{(x.df||[]).forEach(d=>{if(!FD.has(d[0]))FD.set(d[0],[]);FD.get(d[0]).push([i,d])})});
 const kindTxt=d=>(d[1]?'condition only':'value')+(d[2]?' (inferred)':'');
-const flowRow=(v,d)=>[A(v),kindTxt(d),list(d[3],4),d[4]?`<code>${esc(d[4])}</code>`:''];
-function traceRows(id,depth,cap){const seen=new Set([id]),out=[];let lvl=[id];
+const TMS=['same cycle','next cycle','previous value','other task','outside input','not scheduled'],TMD=[0,1,1,0,0,0];
+const tmTxt=d=>d[5]>=0?TMS[d[5]]:'';
+const delayTxt=(c,o)=>(!c&&!o)?'same cycle':[c?c+' cycle'+(c>1?'s':'')+' later':'',o?'task change':''].filter(Boolean).join(' + ');
+const HAS_T=D.tk&&D.tk.length>0;
+const flowRow=(v,d)=>[A(v),kindTxt(d)].concat(HAS_T?[tmTxt(d)]:[]).concat([list(d[3],4),d[4]?`<code>${esc(d[4])}</code>`:'']);
+function traceRows(id,depth,cap){const seen=new Set([id]),out=[],cum=new Map([[id,[0,false]]]);let lvl=[id];
  for(let l=1;l<=depth&&lvl.length&&out.length<cap;l++){const nxt=[];
-  for(const s of lvl){for(const [x,d] of (FD.get(s)||[]).slice().sort((a,b)=>IT[a[0]].n.toLowerCase()<IT[b[0]].n.toLowerCase()?-1:1)){if(seen.has(x))continue;seen.add(x);out.push([l,x,d,s]);nxt.push(x);if(out.length>=cap)return out}}
+  for(const s of lvl){for(const [x,d] of (FD.get(s)||[]).slice().sort((a,b)=>IT[a[0]].n.toLowerCase()<IT[b[0]].n.toLowerCase()?-1:1)){if(seen.has(x))continue;seen.add(x);
+   const pc=cum.get(s)||[0,false],c=[pc[0]+(d[5]>=0?TMD[d[5]]:0),pc[1]||d[5]===3];cum.set(x,c);
+   out.push([l,x,d,s,delayTxt(c[0],c[1])]);nxt.push(x);if(out.length>=cap)return out}}
   lvl=nxt}return out}
-function flowHtml(id){const x=IT[id];let h='';const fd=FD.get(id)||[];
- if(x.df&&x.df.length)h+=`<h3>Derived from</h3><p class="mut">Variables whose value (or whose condition) decides this variable. Local variables and function calls in between are followed.</p>`+table(['Variable','Kind','In function','At'],x.df.map(d=>flowRow(d[0],d)));
- if(fd.length){h+=`<h3>Used to compute</h3><p class="mut">Variables computed from this one (directly).</p>`+table(['Variable','Kind','In function','At'],fd.map(([v,d])=>flowRow(v,d)));
-  const tr=traceRows(id,4,80);if(tr.length>fd.length)h+=`<h3>Signal trace (where the value ends up)</h3><p class="mut">Level 1 = computed from this variable, level 2 = computed from level 1, and so on (up to level 4). Plausibility checks, debouncing and filters show up as the functions in the last column.</p>`+table(['Level','Variable','Computed from','Kind','In function'],tr.map(([l,v,d,s])=>[l,A(v),A(s),kindTxt(d),list(d[3],4)]))}
+function loopRows(id,rows){const par=new Map(rows.map(r=>[r[1],r[3]]));const anc=n=>{const a=new Set([n]);while(par.has(n)&&!a.has(par.get(n))){n=par.get(n);a.add(n)}return a};
+ const out=[];[id].concat(rows.map(r=>r[1])).forEach(n=>{const an=anc(n);(FD.get(n)||[]).forEach(([x,d])=>{if(an.has(x)&&out.length<12)out.push([n,x,d])})});return out}
+function flowHtml(id){const x=IT[id];let h='';const fd=FD.get(id)||[],T=HAS_T?['Timing']:[];
+ if(x.fs&&x.fs.length)h+=`<p class="note"><b>Feeds itself</b>: the value is computed from its own previous value (state, counter or integrator) in ${list(x.fs,4)}.</p>`;
+ if(x.df&&x.df.length)h+=`<h3>Derived from</h3><p class="mut">Variables whose value (or whose condition) decides this variable. Local variables and function calls in between are followed.`+(HAS_T?' Timing: does the writer of the source run before (same cycle) or after (next cycle) the function that uses it.':'')+`</p>`+table(['Variable','Kind'].concat(T,['In function','At']),x.df.map(d=>flowRow(d[0],d)));
+ if(fd.length){h+=`<h3>Used to compute</h3><p class="mut">Variables computed from this one (directly).</p>`+table(['Variable','Kind'].concat(T,['In function','At']),fd.map(([v,d])=>flowRow(v,d)));
+  const tr=traceRows(id,4,80);if(tr.length>fd.length)h+=`<h3>Signal trace (where the value ends up)</h3><p class="mut">Level 1 = computed from this variable, level 2 = computed from level 1, and so on (up to level 4). Delay = cycles added along the shortest path. Plausibility checks, debouncing and filters show up as the functions in the last column.</p>`+table(['Level','Variable','Computed from'].concat(HAS_T?['Timing','Delay so far']:[],['Kind','In function']),tr.map(([l,v,d,s,dl])=>[l,A(v),A(s)].concat(HAS_T?[tmTxt(d),dl]:[],[kindTxt(d),list(d[3],4)])));
+  const lp=loopRows(id,tr);if(lp.length)h+=`<h3>Feedback loops</h3><p class="mut">The value comes back to a variable it was computed from. The step that closes the loop is always delayed by at least one call of the writer.</p>`+table(['From','Feeds back into'].concat(T,['In function']),lp.map(([a,v,d])=>[A(a),A(v)].concat(HAS_T?[tmTxt(d)]:[],[list(d[3],4)])))}
  return h}
 const whenCell=w=>w?(w==='always'?'always':`<span class="ctx">${esc(w)}</span>`):'';
 const list=(ids,max)=>ids.length?ids.slice(0,max||40).map(i=>A(i)).join(', ')+(ids.length>(max||40)?` +${ids.length-(max||40)} more`:''):'<span class="mut">-</span>';
@@ -338,6 +372,7 @@ function pageHome(){
  main.innerHTML=`<h2>${esc(D.title)}</h2><div class="meta">${nf} functions &middot; ${nv} variables &middot; ${nc} calibrations &middot; ${C.length} components`+(D.dataset?` &middot; values from dataset <code>${esc(D.dataset)}</code>`:'')+`</div>
  <h3>Components</h3>`+table(['Component','Functions','Inputs','Outputs'],C.map((c,k)=>[`<a href="#k/${k}">${esc(c.n)}</a>`,c.f.length,c.in.length,c.out.length]))
  +(D.can?`<h3>CAN</h3><p><a href="#can">${D.can.m.length} messages</a> from <code>${esc(D.can.dbc)}</code>${D.can.ecu?' for the ECU <code>'+esc(D.can.ecu)+'</code>':''}</p>`:'')
+ +(HAS_T?`<h3>Tasks</h3><p><a href="#t">${D.tk.length} tasks</a> with execution order, data order and data between tasks</p>`:'')
  +`<h3>Start points</h3><p class="mut">Functions that no function in the code calls: tasks, init, interrupts, diagnostics - or unused code. Sorted by how much they reach.</p>`
  +table(['Function','Component','Calls','Reaches'],D.sp.slice(0,300).map(([f,n,r])=>[A(f),esc(C[IT[f].c].n),n,r+' functions']))+(D.sp.length>300?`<p class="mut">+${D.sp.length-300} more</p>`:'')}
 const NUM=v=>v==null?'':(typeof v==='number'?+v.toPrecision(10):v);
@@ -346,6 +381,12 @@ function canSigTable(m){const E=D.can.ecu;return table(['Name','Description','St
   g.lo!=null&&g.hi!=null?esc(NUM(g.lo)+' ... '+NUM(g.hi)):'',esc(NUM(g.f)+' / '+NUM(g.of)),esc(g.u),
   ks.length?`<span class="enum">${esc(ks.slice(0,8).map(q=>q+'='+g.e[q]).join('; ')+(ks.length>8?'; +'+(ks.length-8)+' more':''))}</span>`:'',
   g.r.map(r=>r===E?`<b>${esc(r)}</b>`:esc(r)).join(', '),(g.v||[]).map(([i,l])=>i>=0?A(i):`<code>${esc(l)}</code>`).join(', ')]}))}
+function pageTasks(){let h=`<h2>Tasks and execution order</h2><div class="meta">A task is a function that no other function calls (the hardware calls it every N samples). Everything it calls runs in that task, in code order. A function that runs several times per cycle counts at its first call.`+(D.ap?' The call order of some functions was not recorded in this graph: re-extract for exact order.':'')+`</div>`;
+ h+=table(['Task','Period','Functions in the task','Of them shown here'],D.tk.map((t,k)=>[`<a href="#t/${k}">${esc(t[0])}</a>`,esc(t[1]||'-'),t[4]+(t[5]?'+':''),t[3].length]));
+ if(D.oi.length)h+=`<h3>Data order: the reader runs before the writer</h3><p class="mut">The reader sees the value of the <b>previous</b> cycle. Fine for state and feedback; check it for signals that should be fresh.</p>`+table(['Variable','Task','Reader (runs first)','Writer (runs later)'],D.oi.map(([v,t,r,w])=>[A(v),esc(D.tk[t][0]),A(r),A(w)]));
+ if(D.ti.length)h+=`<h3>Data between tasks</h3><p class="mut">Written in one task, read in another: the reader gets the latest value whenever it runs.</p>`+table(['Variable','Written in','Read in'],D.ti.map(([v,w,r])=>[A(v),esc(w.map(t=>D.tk[t][0]).join(', ')),esc(r.map(t=>D.tk[t][0]).join(', '))]));
+ main.innerHTML=h}
+function pageTask(k){const t=D.tk[k];if(!t){pageTasks();return}main.innerHTML=`<h2>Task ${esc(t[0])}${t[1]?' ('+esc(t[1])+')':''}</h2><div class="meta">entry ${t[2]>=0?A(t[2]):esc(t[0])} &middot; ${t[4]} functions run in this task`+(t[5]?' (list cut off)':'')+`</div><h3>Execution order</h3><ol>`+t[3].map(i=>`<li>${A(i)}</li>`).join('')+`</ol>`}
 function pageCan(){const K=D.can;let h=`<h2>CAN</h2><div class="meta"><span class="tag">DBC</span>${K.m.length} messages &middot; ${K.m.reduce((a,m)=>a+m.g.length,0)} signals from <code>${esc(K.dbc)}</code>`+(K.ecu?` &middot; messages the ECU <code>${esc(K.ecu)}</code> sends (TX) or receives (RX)`:' &middot; whole bus')+`</div>`;
  [['Sent by the ECU (TX)','TX'],['Received by the ECU (RX)','RX'],['Other messages','']].forEach(([t,d])=>{
   const ms=K.m.map((m,k)=>[m,k]).filter(([m])=>(m.d==='TX'||m.d==='RX'?m.d:'')===d);if(!ms.length)return;
@@ -363,7 +404,7 @@ function pageSig(k,gi){const m=D.can&&D.can.m[k],g=m&&m.g[gi];if(!g){main.innerH
  if(!g.v.length)h+=`<p class="mut">Not linked to a variable (no row in the signal configuration table, or no getter call found).</p>`;
  g.v.forEach(([i,l,ix,gt])=>{h+=table(['Variable','Signal index','Getter'],[[i>=0?A(i):`<code>${esc(l)}</code> <span class="mut">(not in the exported scope)</span>`,esc(ix),`<code>${esc(gt)}</code>`]]);
   if(i>=0){const x=IT[i];if(x.wr.length)h+=`<h4>Written by</h4><p>${list(x.wr.map(r=>r[0]),40)}</p>`;if(x.rd.length)h+=`<h4>Read by</h4><p>${list(x.rd.map(r=>r[0]),60)}</p>`;
-   const tr=traceRows(i,4,80);if(tr.length)h+=`<h3>Derived signals (where the value goes after the variable is filled)</h3><p class="mut">Level 1 = computed from the CAN variable, level 2 = computed from level 1, and so on. Plausibility checks, debouncing and filters show up as the functions in the last column.</p>`+table(['Level','Variable','Computed from','Kind','In function'],tr.map(([l,v,d,s])=>[l,A(v),A(s),kindTxt(d),list(d[3],4)]))}});
+   const tr=traceRows(i,4,80);if(tr.length)h+=`<h3>Derived signals (where the value goes after the variable is filled)</h3><p class="mut">Level 1 = computed from the CAN variable, level 2 = computed from level 1, and so on. Plausibility checks, debouncing and filters show up as the functions in the last column.</p>`+table(['Level','Variable','Computed from'].concat(HAS_T?['Timing','Delay so far']:[],['Kind','In function']),tr.map(([l,v,d,s,dl])=>[l,A(v),A(s)].concat(HAS_T?[tmTxt(d),dl]:[],[kindTxt(d),list(d[3],4)])))}});
  main.innerHTML=h}
 function pageMsg(k){const m=D.can.m[k];if(!m){main.innerHTML='<p>Unknown message.</p>';return}
  let h=`<h2>${esc(m.n)}</h2><div class="meta"><span class="tag">CAN message</span><a href="#can">CAN</a> &middot; <code>${esc(m.h)}</code> &middot; DLC ${m.l}`+(m.y?` &middot; ${m.y} ms`:'')+` &middot; sender ${esc(m.s.join(', ')||'-')}`+(m.d==='TX'||m.d==='RX'?` &middot; <b>${m.d}</b> for ${esc(D.can.ecu)}`:'')+`</div>`;
@@ -397,6 +438,7 @@ function pageItem(id){
  const x=IT[id];if(!x){main.innerHTML='<p>Unknown item.</p>';return}let h='';
  if(x.t==='f'){const ret=x.ret?` &middot; returns <code>${esc(x.ret)}</code>`:'';const c=C[x.c];
   h=head(x,id,ret+` &middot; component <a href="#k/${x.c}">${esc(c.n)}</a>`)+docBlock(x);
+  if(x.rt&&x.rt.length)h+=`<p><b>Runs in task:</b> ${x.rt.map(t=>`<a href="#t">${esc(D.tk[t][0])}${D.tk[t][1]?' ('+esc(D.tk[t][1])+')':''}</a>`).join(', ')}</p>`;
   if(x.par&&x.par.length)h+=table(['Parameter','Type','Role','Meaning (from comment)'],x.par.map(p=>[`<code>${esc(p.n)}</code>`,`<code>${esc(p.t)}</code>`,esc(p.r),esc(p.d)]));
   const nodes=[{k:'me',label:x.n,cls:'me'}],edges=[],seen=new Set(['me']);
   const nd=(i)=>{const k='n'+i;if(!seen.has(k)){seen.add(k);nodes.push({k,label:IT[i].n,href:'#i/'+i,cls:IT[i].t==='b'?'out':''})}return k};
@@ -431,6 +473,7 @@ function pageItem(id){
  else if(x.t==='x'){h=head(x,id,x.sym?` &middot; symbol <code>${esc(x.sym)}</code>`:'')+`<p>A2L axis points &middot; range ${esc(x.r||'-')} ${esc(x.u||'')} &middot; max points ${esc(x.mx==null?'':x.mx)}${x.iq?` &middot; input quantity <code>${esc(x.iq)}</code>`:''}</p>`+(x.d?`<p>${esc(x.d)}</p>`:'')+(x.vals?`<h3>Values</h3><pre>${esc(x.vals)}</pre>`:'')}
  main.innerHTML=h;main.scrollTop=0}
 function route(){if(location.hash==='#can'&&D.can){pageCan();main.scrollTop=0;return}
+ if(HAS_T){if(location.hash==='#t'){pageTasks();main.scrollTop=0;return}const tm=location.hash.match(/^#t\/(\d+)/);if(tm){pageTask(+tm[1]);main.scrollTop=0;return}}
  const sg=location.hash.match(/^#s\/(\d+)\/(\d+)/);if(sg&&D.can){pageSig(+sg[1],+sg[2]);main.scrollTop=0;return}
  const m=location.hash.match(/^#([ikm])\/(\d+)/);if(!m)return pageHome();m[1]==='k'?pageComp(+m[2]):m[1]==='m'?pageMsg(+m[2]):pageItem(+m[2]);main.scrollTop=0}
 

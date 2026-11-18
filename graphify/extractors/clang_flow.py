@@ -26,7 +26,7 @@ _ASSIGN = {"=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="}
 _KNOWN_OUT = {"memcpy": {0}, "memmove": {0}, "memset": {0}, "strcpy": {0}, "strncpy": {0}, "strcat": {0},
               "strncat": {0}, "sprintf": {0}, "snprintf": {0}}
 _MAX_ROUNDS = 8
-_MAX_LOCAL_ROUNDS = 12
+_MAX_LOOP_ITER = 6
 _MAX_LINES = 8
 _MAX_FUNCS = 8
 _MAX_VIA = 5
@@ -67,6 +67,7 @@ class FlowRecorder:
         self._fid = None
         self._file = ""
         self._stack: list = []      # control term sets of the enclosing conditions
+        self._seq: list = []        # list the assignments are appended to (a loop body gets its own list)
         self._cx: list = []         # their names ("if", "else", "loop", "switch")
         self._fp_cache: dict = {}
         self.summaries: dict = {}
@@ -115,8 +116,10 @@ class FlowRecorder:
             return self._fn_id(e.referenced)
         return None
 
-    def _add_assign(self, tgt, data, ctl, line):
-        self._cur.assigns.append((tgt, frozenset(data), frozenset(ctl), line))
+    def _add_assign(self, tgt, data, ctl, line, strong=False):
+        """Assignments are kept in execution (code) order. `strong`: an unconditional write to a whole local variable,
+        which replaces what the variable held before; every other write only adds a source."""
+        self._seq.append((tgt, frozenset(data), frozenset(ctl), line, strong and not self._stack))
 
     # ---- lvalues -----------------------------------------------------------------------
 
@@ -336,7 +339,9 @@ class FlowRecorder:
         data = set(rd)
         if op != "=" and tgt[0] in ("g", "l"):
             data.add(tgt)
-        self._add_assign(tgt, data, rc | idx | self._ctl_now(), c.location.line)
+        direct = ex._peel(lhs).kind == self.ex.K.DECL_REF_EXPR       # whole variable, not `s.m` / `a[i]`
+        self._add_assign(tgt, data, rc | idx | self._ctl_now(), c.location.line,
+                         strong=direct and tgt[0] == "l")
         return rd, rc
 
     def _call(self, c):
@@ -393,7 +398,7 @@ class FlowRecorder:
                 init = inits[-1]
                 d, k = self.ev(init)
                 tgt = ("l", ex._pkey(c))
-                self._add_assign(tgt, d, k | self._ctl_now(), c.location.line)
+                self._add_assign(tgt, d, k | self._ctl_now(), c.location.line, strong=True)
                 fn = self._fn_target(init)
                 if fn is not None:
                     self.holders.setdefault(("l", self._fid, ex._pkey(c)), []).append((None, fn))
@@ -416,16 +421,12 @@ class FlowRecorder:
             for h in kids[:-1]:
                 d, k = self.ev(h)
                 head |= d | k
-            self._push(head, "loop")
-            self.visit(kids[-1])
-            self._pop()
+            self._loop_body(head, kids[-1])
         elif kind == K.DO_STMT:
             if len(kids) < 2:
                 return
             d, k = self.ev(kids[-1])
-            self._push(d | k, "loop")
-            self.visit(kids[0])
-            self._pop()
+            self._loop_body(d | k, kids[0])
         elif kind == K.SWITCH_STMT:
             if not kids:
                 return
@@ -443,6 +444,20 @@ class FlowRecorder:
         else:
             self.ev(c)
 
+    def _loop_body(self, head, body):
+        """A loop body is recorded as a nested list: the resolver runs it twice, so a value written late in one
+        iteration reaches a read early in the next."""
+        nested: list = []
+        outer = self._seq
+        outer.append(("LOOP", nested))
+        self._seq = nested
+        self._push(head, "loop")
+        try:
+            self.visit(body)
+        finally:
+            self._pop()
+            self._seq = outer
+
     def _push(self, terms, name):
         self._stack.append(set(terms))
         self._cx.append(name)
@@ -459,6 +474,7 @@ class FlowRecorder:
         rec.params = {ex._pkey(p): j for j, p in enumerate(params)}
         self.fns[fn_id] = rec
         self._cur, self._fid, self._file, self._stack, self._cx = rec, fn_id, sfile, [], []
+        self._seq = rec.assigns
         try:
             for ch in cursor.get_children():
                 if ch.kind == K.COMPOUND_STMT:
@@ -542,26 +558,35 @@ class FlowRecorder:
 
         ret, out_p = set(), {}
         effects: dict = {}
-        for _ in range(_MAX_LOCAL_ROUNDS):
-            changed = False
-            ret, out_p, effects = set(), {}, {}
-            for tgt, data, ctl, line in rec.assigns:
+
+        def run(items, depth=0):
+            for it in items:
+                if it[0] == "LOOP":
+                    if depth < 3:                       # repeat until nothing new arrives: a value written late in one
+                        for _i in range(_MAX_LOOP_ITER):    # iteration reaches a read early in the next (delay lines)
+                            before = {k: frozenset(v) for k, v in loc.items()}
+                            run(it[1], depth + 1)
+                            if {k: frozenset(v) for k, v in loc.items()} == before:
+                                break
+                    continue
+                tgt, data, ctl, line, strong = it
                 vals = expand(data, False) | expand(ctl, True)
+                if tgt[0] == "l":
+                    if strong:
+                        loc[tgt[1]] = set(vals)         # overwrite: the old sources are gone
+                    elif vals:
+                        loc.setdefault(tgt[1], set()).update(vals)
+                    continue
                 if not vals:
                     continue
-                if tgt[0] == "l":
-                    cur = loc.setdefault(tgt[1], set())
-                    if not vals <= cur:
-                        cur |= vals
-                        changed = True
-                elif tgt[0] == "g":
+                if tgt[0] == "g":
                     effects.setdefault(tgt[1], set()).update((v, line) for v in vals)
                 elif tgt[0] == "pout":
                     out_p.setdefault(tgt[1], set()).update(vals)
                 else:
-                    ret |= vals
-            if not changed:
-                break
+                    ret.update(vals)
+
+        run(rec.assigns)
         # global writes inside callees: x <- parameter j of the callee becomes x <- the argument
         for call in rec.calls:
             cid = canon(call.callee)
@@ -619,7 +644,7 @@ class FlowRecorder:
     # ---- output ------------------------------------------------------------------------
 
     def edges(self, remap, nodes):
-        """-> (derived_from edges, call argument sites {(caller, callee): [...]}, indirect_call edges, call order extra)."""
+        """-> (derived_from edges, call argument sites {(caller, callee): [...]}, indirect calls, variables that feed themselves)."""
         ex = self.ex
         res = self.resolve_all()
 
@@ -628,6 +653,7 @@ class FlowRecorder:
 
         agg: dict = {}
         arg_sites: dict = {}
+        self_feed: dict = {}
         for fid, (effects, cargs) in res.items():
             f = rid(fid)
             if f not in nodes:
@@ -641,7 +667,11 @@ class FlowRecorder:
                     if term[0] != "g":
                         continue
                     ar = rid(term[1])
-                    if ar == xr or ar not in nodes:
+                    if ar == xr:
+                        if not ctl and f not in self_feed.setdefault(xr, []) and len(self_feed[xr]) < _MAX_FUNCS:
+                            self_feed[xr].append(f)            # x = x + a: state / integrator
+                        continue
+                    if ar not in nodes:
                         continue
                     a = agg.setdefault((xr, ar), {"fns": [], "lines": [], "data": False, "ctl": False,
                                                   "via": [], "inf": True, "file": nodes[f].get("source_file", "")})
@@ -676,7 +706,7 @@ class FlowRecorder:
             if v["lines"]:
                 e["source_location"] = f"L{v['lines'][0]}"
             derived.append(e)
-        return derived, arg_sites, self._indirect(remap, nodes)
+        return derived, arg_sites, self._indirect(remap, nodes), self_feed
 
     def _indirect(self, remap, nodes):
         """-> [(caller, target, line, ctx, holder label)] for every function pointer call that could be resolved."""

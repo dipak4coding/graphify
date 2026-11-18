@@ -59,3 +59,9 @@ Open design questions:
 - Docs: variable page gets "Derived from" and "Feeds" tables; function page gets a condition column in the read / write tables.
 
 Suggested implementation order: B1 (small, no new edge type) -> B3 (needs A3 signatures) -> B2 (needs local alias handling).
+
+
+## Update: execution order (done)
+
+- F2 data order view and F3 task assignment: done (tracker §60). Tasks = entry functions; `--tasks` names periods.
+- Still open: struct-member level (A2), `graphify trace` CLI, derived_from in query defaults, real-module measurement.

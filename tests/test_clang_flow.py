@@ -160,3 +160,155 @@ def test_html_flow_data_and_pages(graph, tmp_path):
         assert "condition only" in page.inner_text("#main")
         b.close()
     assert not errs, errs
+
+
+# ---- execution order: tasks, timing of each step, data order, feedback -----------------------------------
+
+SCHED_C = """
+int HwIn, Raw, Plaus, Deb, Ctrl, Late, Slow, State, Fb1, Fb2, Ow1, Ow2;
+void Read(void) { Raw = HwIn; }
+void Plaus1(void) { Plaus = Raw > 0 ? Raw : 0; }
+void Debounce(void) { Deb = Plaus; State = State + Raw; }
+void UseLate(void) { Late = Ctrl; }
+void Produce(void) { Ctrl = Deb + 1; }
+void LoopA(void) { Fb1 = Fb2 + 1; }
+void LoopB(void) { Fb2 = Fb1; }
+void Overwrite(void) { int t = Raw; t = Plaus; Ow1 = t; }
+void Task10(void) { Read(); Plaus1(); Debounce(); UseLate(); Produce(); LoopA(); LoopB(); Overwrite(); }
+void SlowUse(void) { Slow = Deb; }
+void Task20(void) { SlowUse(); }
+"""
+
+
+@pytest.fixture(scope="module")
+def sched_graph(tmp_path_factory):
+    root = tmp_path_factory.mktemp("sched")
+    (root / "s.c").write_text(SCHED_C)
+    old = os.getcwd()
+    os.chdir(root)
+    clang_c.set_runtime_config(extractor="clang")
+    nodes, edges = [], []
+    try:
+        clang_c.run_clang_pass([root / "s.c"], root, nodes, edges)
+    finally:
+        clang_c.set_runtime_config()
+        os.chdir(old)
+    return {"directed": False, "nodes": nodes, "links": edges}
+
+
+def _res(raw, tasks=None, notes=False):
+    from graphify import swdoc
+    return swdoc.build_vault(raw, ["."], tasks=tasks, want_notes=notes)
+
+
+def test_overwritten_local_drops_its_old_source(sched_graph):
+    lab = {n["id"]: n["label"] for n in sched_graph["nodes"]}
+    d = {(lab[e["source"]], lab[e["target"]]) for e in sched_graph["links"] if e["relation"] == "derived_from"}
+    assert ("Ow1", "Plaus") in d and ("Ow1", "Raw") not in d      # t = Raw; t = Plaus; Ow1 = t
+    assert ("Fb1", "Fb2") in d and ("Fb2", "Fb1") in d
+
+
+def test_feeds_itself_flag(sched_graph):
+    state = next(n for n in sched_graph["nodes"] if n["label"] == "State")
+    assert state["metadata"]["feeds_itself"]
+
+
+def test_tasks_are_the_functions_nobody_calls(sched_graph):
+    sc = _res(sched_graph)["ctx"].M.sched
+    assert {t.name for t in sc.tasks} == {"Task10", "Task20"}
+    t10 = next(t for t in sc.tasks if t.name == "Task10")
+    assert [sc.M.label(f).rstrip("()") for f in t10.order][:5] == ["Task10", "Read", "Plaus1", "Debounce", "UseLate"]
+
+
+def test_tasks_option_names_tasks_and_restricts_them(sched_graph):
+    sc = _res(sched_graph, {"Task10": "10 ms"})["ctx"].M.sched
+    assert [t.label for t in sc.tasks] == ["Task10 (10 ms)"]
+
+
+def test_timing_of_every_step(sched_graph):
+    from graphify import swdoc_sched as ss
+    M = _res(sched_graph)["ctx"].M
+    sc = M.sched
+    lab = {M.label(i): i for i in M.nodes}
+    code = {(M.label(e["source"]), M.label(e["target"])): sc.edge_timing(e) for e in M.edges if e["relation"] == "derived_from"}
+    assert code[("Plaus", "Raw")] == ss.SAME and code[("Deb", "Plaus")] == ss.SAME and code[("Ctrl", "Deb")] == ss.SAME
+    assert code[("Late", "Ctrl")] == ss.NEXT                       # UseLate runs before Produce writes Ctrl
+    assert code[("Slow", "Deb")] == ss.OTHER                       # written in Task10, read in Task20
+    assert code[("Raw", "HwIn")] == ss.OUTSIDE                     # nobody writes HwIn in the code
+    assert code[("State", "Raw")] == ss.SAME
+    assert lab
+
+
+def test_trace_delay_is_summed_along_the_path(sched_graph):
+    M = _res(sched_graph)["ctx"].M
+    raw = next(i for i in M.nodes if M.label(i) == "Raw")
+    rows = {M.label(t["id"]): t for t in M.trace_timed(raw)}
+    assert rows["Plaus"]["delay"] == "same cycle" and rows["Ctrl"]["delay"] == "same cycle"
+    assert rows["Late"]["delay"] == "1 cycle later"
+    assert rows["Slow"]["delay"] == "task change"
+
+
+def test_data_order_and_task_interfaces(sched_graph):
+    M = _res(sched_graph)["ctx"].M
+    sc = M.sched
+    issues = {(M.label(v), M.label(r).rstrip("()"), M.label(w).rstrip("()")) for v, _t, r, _rt, w, _wt in sc.order_issues()}
+    assert ("Ctrl", "UseLate", "Produce") in issues and ("Fb2", "LoopA", "LoopB") in issues
+    assert not any(v == "Plaus" for v, _r, _w in issues)
+    ifs = {M.label(v) for v, _w, _r in sc.task_interfaces()}
+    assert "Deb" in ifs
+
+
+def test_feedback_loop_is_listed(sched_graph):
+    M = _res(sched_graph)["ctx"].M
+    fb1 = next(i for i in M.nodes if M.label(i) == "Fb1")
+    rows = [(t["level"], t["id"], t["edge"], t["src"]) for t in M.trace_timed(fb1)]
+    assert [(M.label(a), M.label(b)) for a, b, _e in M.loops(fb1, rows)] == [("Fb2", "Fb1")]
+
+
+def test_notes_and_html_show_tasks_and_timing(sched_graph, tmp_path):
+    import json as _json
+    import re
+    from graphify import swdoc
+    notes = _res(sched_graph, {"Task10": "10 ms", "Task20": "20 ms"}, notes=True)["notes"]
+    mod = next(v for k, v in notes.items() if k.startswith("modules/"))
+    assert "## Tasks and execution order" in mod and "Execution order: Task10 (10 ms)" in mod
+    assert "reader runs before the writer" in mod and "Data between tasks" in mod
+    ctrl = next(v for k, v in notes.items() if k.endswith("variables/Ctrl.md"))
+    assert "next cycle" in ctrl
+    raw = next(v for k, v in notes.items() if k.endswith("variables/Raw.md"))
+    assert "1 cycle later" in raw and "Feedback loops" not in raw
+    assert "Feeds itself" in next(v for k, v in notes.items() if k.endswith("variables/State.md"))
+    assert "**Runs in task:** Task10 (10 ms)" in next(v for k, v in notes.items() if k.endswith("functions/Read.md"))
+    gp = tmp_path / "g.json"
+    gp.write_text(_json.dumps(sched_graph), encoding="utf-8")
+    assert swdoc.run_swdoc([".", "--module", "Software", "--graph", str(gp), "--out", str(tmp_path / "o"), "--html",
+                            "--tasks", "Task10=10 ms,Task20=20 ms"]) == 0
+    html = (tmp_path / "o" / "Software.html").read_text(encoding="utf-8")
+    data = _json.loads(re.search(r'<script id="data" type="application/json">(.*?)</script>', html, re.S).group(1).replace("<\\/", "</"))
+    assert [t[:2] for t in data["tk"]] == [["Task10", "10 ms"], ["Task20", "20 ms"]] and data["oi"] and data["ti"]
+    names = [it["n"] for it in data["it"]]
+    assert data["it"][names.index("Late")]["df"][0][5] == 1
+    pw = pytest.importorskip("playwright.sync_api")
+    with pw.sync_playwright() as p:
+        try:
+            b = p.chromium.launch()
+        except Exception:
+            pytest.skip("no browser")
+        page = b.new_page()
+        errs = []
+        page.on("pageerror", lambda e: errs.append(str(e)))
+        url = (tmp_path / "o" / "Software.html").as_uri()
+        for i in range(len(names)):
+            page.goto(f"{url}#i/{i}")
+            assert page.inner_text("#main h2")
+        page.goto(f"{url}#t")
+        txt = page.inner_text("#main")
+        assert "Task10" in txt and "reader runs before the writer" in txt and "Data between tasks" in txt
+        page.goto(f"{url}#t/0")
+        assert "Execution order" in page.inner_text("#main")
+        page.goto(f"{url}#i/{names.index('Raw')}")
+        assert "1 cycle later" in page.inner_text("#main")
+        page.goto(f"{url}#i/{names.index('Fb1')}")
+        assert "Feedback loops" in page.inner_text("#main")
+        b.close()
+    assert not errs, errs

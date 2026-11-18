@@ -1748,7 +1748,9 @@ class ClangExtractor:
 
     def _add_flow_edges(self, edges: dict, remap: dict) -> None:
         """derived_from (data flow), `calls` argument variables and indirect_call (function pointers)."""
-        derived, arg_sites, indirect = self.flow.edges(remap, self.nodes)
+        derived, arg_sites, indirect, self_feed = self.flow.edges(remap, self.nodes)
+        for vid, fns in self_feed.items():
+            self.nodes[vid].setdefault("metadata", {})["feeds_itself"] = fns
         for e in derived:
             edges.setdefault((e["source"], e["target"], "derived_from"), e)
         for (src, tgt), sites in arg_sites.items():
