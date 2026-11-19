@@ -211,8 +211,17 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
         for t in sc.tasks:
             inside = [f for f in t.order if f in fset]
             if inside:
+                lanes = [[idx[f], t.depth.get(f, 0), t.pos.get(f, 0), t.end.get(f, 0)] for f in inside[:300]]
+                evs = []
+                for v in sorted(set(t.writes) | set(t.reads), key=lambda x: M.label(x).lower()):
+                    if v in idx:
+                        w = [[a, idx[f]] for a, f in t.writes.get(v, []) if f in idx][:20]
+                        r = [[a, idx[f]] for a, f in t.reads.get(v, []) if f in idx][:20]
+                        if w or r:
+                            evs.append([idx[v], w, r])
                 tidx[t] = len(tk)
-                tk.append([t.name, t.period_text, idx.get(t.entry, -1), ids(inside)[:300], len(t.order), 1 if t.truncated else 0])
+                tk.append([t.name, t.period_text, idx.get(t.entry, -1), ids(inside)[:300], len(t.order), 1 if t.truncated else 0,
+                           lanes, evs[:600], max(t.end.values(), default=0)])
         for f in funcs:
             rts = [tidx[t] for t in sc.runs_in(f) if t in tidx]
             if rts:
@@ -386,7 +395,18 @@ function pageTasks(){let h=`<h2>Tasks and execution order</h2><div class="meta">
  if(D.oi.length)h+=`<h3>Data order: the reader runs before the writer</h3><p class="mut">The reader sees the value of the <b>previous</b> cycle. Fine for state and feedback; check it for signals that should be fresh.</p>`+table(['Variable','Task','Reader (runs first)','Writer (runs later)'],D.oi.map(([v,t,r,w])=>[A(v),esc(D.tk[t][0]),A(r),A(w)]));
  if(D.ti.length)h+=`<h3>Data between tasks</h3><p class="mut">Written in one task, read in another: the reader gets the latest value whenever it runs.</p>`+table(['Variable','Written in','Read in'],D.ti.map(([v,w,r])=>[A(v),esc(w.map(t=>D.tk[t][0]).join(', ')),esc(r.map(t=>D.tk[t][0]).join(', '))]));
  main.innerHTML=h}
-function pageTask(k){const t=D.tk[k];if(!t){pageTasks();return}main.innerHTML=`<h2>Task ${esc(t[0])}${t[1]?' ('+esc(t[1])+')':''}</h2><div class="meta">entry ${t[2]>=0?A(t[2]):esc(t[0])} &middot; ${t[4]} functions run in this task`+(t[5]?' (list cut off)':'')+`</div><h3>Execution order</h3><ol>`+t[3].map(i=>`<li>${A(i)}</li>`).join('')+`</ol>`}
+function pageTask(k){const t=D.tk[k];if(!t){pageTasks();return}main.innerHTML=`<h2>Task ${esc(t[0])}${t[1]?' ('+esc(t[1])+')':''}</h2><div class="meta">entry ${t[2]>=0?A(t[2]):esc(t[0])} &middot; ${t[4]} functions run in this task`+(t[5]?' (list cut off)':'')+`</div><h3>Timeline</h3><p class="mut">Time runs to the right (code order, one step per variable access). One lane per function; the bar spans the function including its callees. Pick a variable to see where it is written (&#9650;) and first read (&#9679;) per function. An arrow that points back to the left means the reader runs before the writer: it sees the value of the previous cycle.</p><div id="tlc"></div><h3>Execution order</h3><ol>`+t[3].map(i=>`<li>${A(i)}</li>`).join('')+`</ol>`;timeline(t)}
+function timeline(t){const c=document.getElementById('tlc');if(!c||!t[6]||!t[6].length)return;const L=t[6],EV=t[7]||[],T=Math.max(t[8],1),mx=Math.max(...L.map(l=>l[1]));
+ c.innerHTML=`<div class="meta">Depth <select id="tld">${Array.from({length:mx+1},(_,i)=>`<option value="${i}"${i===Math.min(mx,2)?' selected':''}>${i===mx?'all':'up to '+i}</option>`).join('')}</select> &nbsp; Variable <select id="tlv"><option value="-1">(none)</option>${EV.map((e,i)=>`<option value="${i}">${esc(IT[e[0]].n)}</option>`).join('')}</select></div><div style="overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:6px"><svg id="tls"></svg></div>`;
+ const draw=()=>{const dmax=+document.getElementById('tld').value,ev=EV[+document.getElementById('tlv').value];const rows=L.filter(l=>l[1]<=dmax);const row=new Map();rows.forEach((l,i)=>row.set(l[0],i));
+  const LW=230,W=900,RH=20,H=rows.length*RH+24,xs=x=>LW+8+x/T*(W-LW-20);let s=`<svg id="tls" width="${W}" height="${H}" style="font:12px sans-serif" xmlns="http://www.w3.org/2000/svg">`;
+  rows.forEach((l,i)=>{const y=i*RH+12,x1=xs(l[2]),x2=Math.max(xs(l[3]),x1+4);s+=`<text x="${6+l[1]*8}" y="${y+RH/2}" fill="currentColor" dominant-baseline="middle">${esc(IT[l[0]].n).slice(0,28-l[1]*2)}</text><line x1="${LW}" x2="${W-6}" y1="${y+RH-1}" y2="${y+RH-1}" stroke="currentColor" opacity=".08"/><a href="#i/${l[0]}"><rect x="${x1}" y="${y+4}" width="${x2-x1}" height="${RH-8}" rx="3" fill="#3b82f6" opacity="${.35+.1*Math.min(l[1],4)}"><title>${esc(IT[l[0]].n)}</title></rect></a>`});
+  if(ev){const pt=(a,f)=>row.has(f)?[xs(a),row.get(f)*RH+12+RH/2]:null;const w=ev[1].map(([a,f])=>pt(a,f)),r=ev[2].map(([a,f])=>[pt(a,f),a]);
+   const w0=ev[1].length?Math.min(...ev[1].map(x=>x[0])):null;
+   r.forEach(([p,a])=>{if(!p)return;const wp=w.find(Boolean);if(wp&&w0!==null){const back=a<=w0;s+=`<path d="M${wp[0]},${wp[1]} L${p[0]},${p[1]}" stroke="${back?'#ef4444':'#22c55e'}" stroke-width="1.5" fill="none" stroke-dasharray="${back?'4 3':''}"><title>${back?'reader runs before the writer (previous cycle)':'same cycle'}</title></path>`}s+=`<circle cx="${p[0]}" cy="${p[1]}" r="4" fill="#06b6d4"/>`});
+   w.forEach(p=>{if(p)s+=`<polygon points="${p[0]},${p[1]-6} ${p[0]-5},${p[1]+4} ${p[0]+5},${p[1]+4}" fill="#f59e0b"/>`})}
+  document.getElementById('tls').outerHTML=s+'</svg>'};
+ document.getElementById('tld').onchange=draw;document.getElementById('tlv').onchange=draw;draw()}
 function pageCan(){const K=D.can;let h=`<h2>CAN</h2><div class="meta"><span class="tag">DBC</span>${K.m.length} messages &middot; ${K.m.reduce((a,m)=>a+m.g.length,0)} signals from <code>${esc(K.dbc)}</code>`+(K.ecu?` &middot; messages the ECU <code>${esc(K.ecu)}</code> sends (TX) or receives (RX)`:' &middot; whole bus')+`</div>`;
  [['Sent by the ECU (TX)','TX'],['Received by the ECU (RX)','RX'],['Other messages','']].forEach(([t,d])=>{
   const ms=K.m.map((m,k)=>[m,k]).filter(([m])=>(m.d==='TX'||m.d==='RX'?m.d:'')===d);if(!ms.length)return;

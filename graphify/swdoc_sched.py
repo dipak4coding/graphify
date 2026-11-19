@@ -52,6 +52,9 @@ class Task:
         self.period, self.unit = parse_period(period_text)
         self.order: list = []                 # function ids in the order they first run
         self.pos: dict = {}                   # function id -> timeline index where it starts
+        self.end: dict = {}                   # function id -> timeline index where it ends (callees included)
+        self.depth: dict = {}                 # function id -> call depth below the entry
+        self.reads: dict = defaultdict(list)  # variable -> [(time, function)] first read per function
         self.writes: dict = defaultdict(list)  # variable -> [(time, function)]
         self.first_read: dict = {}            # (variable, function) -> time of the first read
         self.truncated = False
@@ -128,6 +131,7 @@ class Schedule:
                 seen.add(f)
                 t.order.append(f)
                 t.pos[f] = clock[0]
+                t.depth[f] = depth
                 for _ln, _rk, kind, payload in self._items(f):
                     if kind == "c":
                         expand(payload, depth + 1)
@@ -136,7 +140,10 @@ class Schedule:
                     if kind == "w":
                         t.writes[payload].append((clock[0], f))
                     else:
-                        t.first_read.setdefault((payload, f), clock[0])
+                        if (payload, f) not in t.first_read:
+                            t.first_read[(payload, f)] = clock[0]
+                            t.reads[payload].append((clock[0], f))
+                t.end[f] = clock[0]
 
             expand(entry, 0)
             self.tasks.append(t)

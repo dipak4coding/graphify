@@ -306,6 +306,9 @@ def test_notes_and_html_show_tasks_and_timing(sched_graph, tmp_path):
         assert "Task10" in txt and "reader runs before the writer" in txt and "Data between tasks" in txt
         page.goto(f"{url}#t/0")
         assert "Execution order" in page.inner_text("#main")
+        assert page.locator("#tls rect").count() == 9 and "Timeline" in page.inner_text("#main")
+        page.select_option("#tlv", label="Ctrl")
+        assert page.locator("#tls path").count() == 1 and page.locator("#tls polygon").count() == 1
         page.goto(f"{url}#i/{names.index('Raw')}")
         assert "1 cycle later" in page.inner_text("#main")
         page.goto(f"{url}#i/{names.index('Fb1')}")

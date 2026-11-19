@@ -682,3 +682,10 @@ Supersedes the per-element handling of sections 30 and 31 (expansion over the ar
 
 Tests: 9 new in `tests/test_clang_flow.py` (20 total, incl. playwright pages). Bug found by them: `order_issues` unpacked `(var, func)` keys swapped.
 Limits: not measured on real kku module; function running several times counts at first call; merged read/write edge lines ambiguous; function pointers ordered like direct calls.
+
+## 61. Task timeline view (HTML `#t/<k>`)
+
+- Swimlane: one lane per function (code order), time to the right, bar = function incl. callees; depth filter (default up to 2).
+- Variable picker: writes (triangle), first reads (dot); dashed red arrow = reader runs before writer (previous cycle), green = same cycle.
+- Data: `tk[k][6]` lanes `[fn, depth, start, end]`, `[7]` variable events, `[8]` total time; `Task.end/depth/reads` in `swdoc_sched.py`.
+- Indented execution list kept as fallback. Limits: first call only, max 300 lanes / 600 variables per task.
