@@ -508,7 +508,7 @@ const sigIn=g=>comp<0||g.v.some(v=>v[0]>=0&&CS[comp].has(v[0]));
 $('#chips').innerHTML=CH.map(([k,l])=>`<span class="chip${k===kind?' on':''}" data-k="${k}">${l}</span>`).join('');
 $('#chips').onclick=e=>{if(e.target.dataset.k!==undefined){kind=e.target.dataset.k;document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on',c.dataset.k===kind));side()}};
 function side(){const q=$('#q').value.trim().toLowerCase(),L=$('#list');
- if(!q&&!kind&&comp<0){L.innerHTML=C.map((c,k)=>`<a href="#k/${k}">${esc(c.n)} <small>${c.f.length}</small></a>`).join('')+(D.can?`<a href="#can">CAN messages <small>${D.can.m.length}</small></a>`:'');return}
+ if(!q&&!kind&&comp<0){L.innerHTML=C.map((c,k)=>`<a href="#k/${k}">${esc(c.n)} <small>${c.f.length}</small></a>`).join('')+(D.can?`<a href="#can">CAN messages <small>${D.can.m.length}</small></a>`:'')+(HAS_T?`<a href="#t">Tasks and timeline <small>${D.tk.length}</small></a>`+D.tk.map((t,k)=>`<a href="#t/${k}">&nbsp;&nbsp;${esc(t[0])}${t[1]?' ('+esc(t[1])+')':''}</a>`).join(''):'');return}
  const head=comp>=0?`<a href="#k/${comp}"><b>${esc(C[comp].n)}</b> <small>component page</small></a>`:'';
  const cm=[];
  if(D.can&&(!kind||kind==='s')){

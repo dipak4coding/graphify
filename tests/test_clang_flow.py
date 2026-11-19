@@ -301,6 +301,9 @@ def test_notes_and_html_show_tasks_and_timing(sched_graph, tmp_path):
         for i in range(len(names)):
             page.goto(f"{url}#i/{i}")
             assert page.inner_text("#main h2")
+        page.goto(url)
+        page.click("#list a:has-text('Tasks and timeline')")
+        assert page.url.endswith("#t")
         page.goto(f"{url}#t")
         txt = page.inner_text("#main")
         assert "Task10" in txt and "reader runs before the writer" in txt and "Data between tasks" in txt
