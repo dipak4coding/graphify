@@ -689,3 +689,14 @@ Limits: not measured on real kku module; function running several times counts a
 - Variable picker: writes (triangle), first reads (dot); dashed red arrow = reader runs before writer (previous cycle), green = same cycle.
 - Data: `tk[k][6]` lanes `[fn, depth, start, end]`, `[7]` variable events, `[8]` total time; `Task.end/depth/reads` in `swdoc_sched.py`.
 - Indented execution list kept as fallback. Limits: first call only, max 300 lanes / 600 variables per task.
+
+## 62. CAN signals mapped via `SokSig_Data_CfgSig_ci` + `Sic_Data_CfgSokSigU8_ci`
+
+| Item | Detail |
+|---|---|
+| Rule | Elements of `SokSig_Data_CfgSig_ci` are numbered 0, 1, 2 ... by position; the comment **in front of** an element is the CAN signal name, values are ignored. `Sic_Data_CfgSokSigU8_ci` has rows `{ <enum = element number>, &<variable> }` (enum folded by clang, cast around `&var` is fine). Chain: DBC signal -> comment -> position -> enum row -> variable |
+| Comment rule | text between the previous element and this one; the rest of the previous element's line (its trailing comment) is skipped; last comment wins; `//` and `/* */` |
+| Config | `can_sok_table`, `can_sok_map` (config file) or `--can-sok-table`, `--can-sok-map`; defaults are the two names above |
+| Join | same `join_can`; rows and rows tagged `src = "sok"` so the two index spaces (BilSig first member vs. SokSig position) never mix. Same edge `carried_in`, same CSV / JSON (`getter` column = the map array name), same diagnostics (comment not in DBC, enum without element, element without enum row, duplicate) |
+| Tests | `tests/test_can_map.py` +2 (9 total) |
+| Unverified | real rows; elements whose comment sits behind them instead of in front would be shifted by one; `#if`-disabled elements are skipped by clang (position counts only active elements) |

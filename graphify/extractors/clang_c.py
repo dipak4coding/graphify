@@ -74,6 +74,8 @@ class ClangConfig:
     dbc_node: str = "TCU"  # ECU of the DBC: only its TX/RX messages are added ("" or "*" = whole bus)
     can_table: str = "BilSig_Data_CfgSig_ci"  # array of signal config structs (first member = signal index, trailing // comment = CAN signal name)
     can_reader: str = "Sic_HolenSignale"      # function whose body calls the getters getter(index, &variable)
+    can_sok_table: str = "SokSig_Data_CfgSig_ci"   # array whose elements are numbered 0,1,2.. ; the comment in FRONT of an element = CAN signal name (values ignored)
+    can_sok_map: str = "Sic_Data_CfgSokSigU8_ci"   # array of rows {<enum = element number>, &<variable>}
     dbc: str | None = None  # path to the CAN matrix (.dbc); adds can_message / can_signal nodes
     par: str | None = None  # path to a .par parameter-value file (optional; needs a2l for the coverage report)
     par_name: str | None = None  # dataset name for the .par (default: file name)
@@ -110,7 +112,7 @@ def set_runtime_config(**kwargs) -> None:
 
 def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
     cfg = ClangConfig(base_dir=str(base_dir))
-    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "par", "par_name", "debug", "header_declarations", "parse_comments", "data_flow"):
+    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "par", "par_name", "debug", "header_declarations", "parse_comments", "data_flow"):
         if key in data:
             setattr(cfg, key, data[key])
     if "extractor" in data:
@@ -136,7 +138,7 @@ def _override() -> dict:
 
 def _apply_override(cfg: ClangConfig, ov: dict) -> ClangConfig:
     """CLI/env wins over the config file; absolute paths from the CLI need no base_dir."""
-    for key in ("compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "par", "par_name", "extractor", "debug"):
+    for key in ("compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "par", "par_name", "extractor", "debug"):
         if key in ov:
             setattr(cfg, key, ov[key])
     if "enabled" in ov:
@@ -870,8 +872,62 @@ class ClangExtractor:
                     first = " ".join(t.spelling for t in kids[0].get_tokens()) if kids else ""
                     self.can_rows.append({"index": idx, "first": first, "name": name, "file": self.sf(sfile),
                                           "line": row.extent.start.line})
+            elif top.kind == K.VAR_DECL and top.is_definition() and top.spelling in (cfg.can_sok_table, cfg.can_sok_map) and top.spelling:
+                self._can_sok(top, sfile)
             elif top.kind == K.FUNCTION_DECL and top.spelling == reader and top.is_definition():
                 self._can_getters(top, sfile)
+
+    def _init_list(self, decl):
+        K = self.K
+        init = next((c for c in decl.get_children() if c.kind in (K.INIT_LIST_EXPR, K.UNEXPOSED_EXPR)), None)
+        init = self._peel(init) if init is not None else None
+        return init if init is not None and init.kind == K.INIT_LIST_EXPR else None
+
+    @staticmethod
+    def _front_comment(gap: str) -> str:
+        """Comment in front of an element: the text between the previous element and this one. The rest of the previous
+        element's line (its own trailing comment) is skipped; the last comment before the element wins."""
+        if "\n" in gap:
+            gap = gap.split("\n", 1)[1]
+        found = re.findall(r"//([^\n]*)|/\*(.*?)\*/", gap, re.S)
+        if not found:
+            return ""
+        a, b = found[-1]
+        return (a or b).split("//")[0].strip(" \t\r\n*/")
+
+    def _can_sok(self, decl, sfile: str) -> None:
+        """``SokSig_Data_CfgSig_ci``: element k (0, 1, 2, ...) is named by the comment in front of it, values are ignored.
+        ``Sic_Data_CfgSokSigU8_ci``: rows ``{ <enum = element number>, &<variable> }``. Both go into the same lists as the
+        BilSig mechanism, tagged ``src = "sok"`` so the two index spaces never mix."""
+        init = self._init_list(decl)
+        if init is None:
+            return
+        kids = list(init.get_children())
+        if decl.spelling == self.cfg.can_sok_table:
+            text = Path(sfile).read_text(encoding="latin-1", errors="replace")
+            prev = init.extent.start.offset + 1
+            for k, el in enumerate(kids):
+                a, z = el.extent.start.offset, el.extent.end.offset
+                self.can_rows.append({"index": k, "first": "", "name": self._front_comment(text[prev:a]) if a >= prev else "",
+                                      "file": self.sf(sfile), "line": el.extent.start.line, "src": "sok"})
+                prev = z
+            return
+        for row in kids:
+            row = self._peel(row)
+            parts = list(row.get_children()) if row.kind == self.K.INIT_LIST_EXPR else []
+            if len(parts) < 2:
+                continue
+            idx = self._const_int(parts[0])
+            a = self._peel(parts[1])
+            if self._c_op_kind(a, "clang_getCursorUnaryOperatorKind") == _C_UNOP_ADDROF:
+                ch = list(a.get_children())
+                a = self._peel(ch[0]) if ch else a
+            ref, _extras = self._lvalue_root(a)
+            base = {"index": idx, "getter": decl.spelling, "file": self.sf(sfile), "line": row.extent.start.line, "src": "sok"}
+            if idx is None or ref is None:
+                self.can_calls.append({**base, "var": None, "note": "enum not constant" if idx is None else "no variable"})
+            else:
+                self.can_calls.append({**base, "var": self._global_var(ref, sfile), "var_name": ref.referenced.spelling})
 
     def _can_getters(self, fn, sfile: str) -> None:
         K = self.K

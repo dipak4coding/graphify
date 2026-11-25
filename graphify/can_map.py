@@ -50,14 +50,15 @@ def join_can(nodes: list, edges: list, rows: list, calls: list, source_file: str
         defs = [c for c in cands if not (c.get("metadata") or {}).get("declaration_only")]
         return (defs or cands or [None])[0]
 
+    # two index spaces: the BilSig table (first member = index) and the SokSig table (position = index), never mixed
     calls_by_idx: dict = {}
     for c in calls:
         if c.get("index") is not None and c.get("var_name"):
-            calls_by_idx.setdefault(c["index"], []).append(c)
+            calls_by_idx.setdefault((c.get("src", ""), c["index"]), []).append(c)
     rows_by_idx: dict = {}
     for r in rows:
         if r.get("index") is not None:
-            rows_by_idx.setdefault(r["index"], []).append(r)
+            rows_by_idx.setdefault((r.get("src", ""), r["index"]), []).append(r)
 
     seen = {(e.get("source"), e.get("target"), e.get("relation")) for e in edges}
     mapping, diag = [], {"rows_without_index": [], "rows_without_name": [], "rows_not_in_dbc": [], "rows_without_getter": [],
@@ -65,7 +66,7 @@ def join_can(nodes: list, edges: list, rows: list, calls: list, source_file: str
                          "ambiguous_dbc_name": [], "rx_signals_without_row": []}
     linked_sigs: set = set()
 
-    for idx, rs in sorted(rows_by_idx.items()):
+    for (_src, idx), rs in sorted(rows_by_idx.items()):
         if len(rs) > 1:
             diag["duplicate_index"].append({"index": idx, "rows": [f"{r['file']}:{r['line']}" for r in rs]})
     for r in rows:
@@ -84,7 +85,7 @@ def join_can(nodes: list, edges: list, rows: list, calls: list, source_file: str
         if len(cands) > 1:
             diag["ambiguous_dbc_name"].append({"comment": r["name"], "messages": [c["metadata"].get("message") for c in cands]})
             status = "ambiguous"
-        gcalls = calls_by_idx.get(r["index"], [])
+        gcalls = calls_by_idx.get((r.get("src", ""), r["index"]), [])
         if not gcalls:
             diag["rows_without_getter"].append({"at": where, "index": r["index"], "comment": r["name"]})
         for sg in cands:
@@ -113,8 +114,8 @@ def join_can(nodes: list, edges: list, rows: list, calls: list, source_file: str
                                   "metadata": {"index": r["index"], "config_comment": r["name"], "getter": c["getter"],
                                                "getter_line": c["line"], "getter_file": c["file"],
                                                "config_line": r["line"], "match": status}})
-    for idx, cs in sorted(calls_by_idx.items()):
-        if idx not in rows_by_idx:
+    for (src, idx), cs in sorted(calls_by_idx.items()):
+        if (src, idx) not in rows_by_idx:
             for c in cs:
                 diag["getters_without_row"].append({"index": idx, "variable": c["var_name"], "at": f"{c['file']}:{c['line']}"})
     for c in calls:

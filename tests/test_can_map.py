@@ -156,3 +156,68 @@ def test_html_signal_page_and_component_filter(proj, monkeypatch):
     assert g["v"][0][0] >= 0 and g["v"][0][2] == 9 and g["v"][0][3] == "BilSig_Get_Signal_U8"
     html = render(d)
     assert 'id="comp"' in html and "pageSig" in html and "#s/" in html
+
+
+# ---- SokSig: comments in front of the elements (numbered 0,1,2..), array of {enum, &variable} ------------------
+
+SOK_H = '''enum { SOK_N_MOT = 0, SOK_V_FZG, SOK_MODE, SOK_MISSING = 7 };
+'''
+SOK_C = '''#include "sok.h"
+typedef struct { int a; int b; } SokCfg_t;
+const SokCfg_t SokSig_Data_CfgSig_ci[] =
+{
+  // MO_Torque
+  { 1, 2 },   // trailing text of the first element, not its name
+  /* ESP_Speed */
+  { 3, 4 },
+  // ESP_Mode
+  { 5, 6 },
+  // Unmapped_Sig
+  { 7, 8 }
+};
+unsigned short SokVal_Torque, SokVal_Speed;
+unsigned char SokVal_Mode;
+typedef struct { int e; void *p; } SokMap_t;
+const SokMap_t Sic_Data_CfgSokSigU8_ci[] =
+{
+  { SOK_N_MOT, &SokVal_Torque },
+  { SOK_V_FZG, (void *)&SokVal_Speed },
+  { SOK_MODE,  &SokVal_Mode },
+  { SOK_MISSING, &SokVal_Mode }
+};
+'''
+
+
+def _run_sok(proj, **kw):
+    from graphify.extractors import clang_c
+    clang_c.set_runtime_config(extractor="clang", dbc=str(proj / "t.dbc"), dbc_node="*", **kw)
+    nodes, edges = [], []
+    try:
+        clang_c.run_clang_pass([proj / "sok.c"], proj, nodes, edges)
+    finally:
+        clang_c.set_runtime_config()
+    return nodes, edges
+
+
+def test_soksig_comments_numbered_and_mapped_to_variables(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "sok.h").write_text(SOK_H)
+    (proj / "sok.c").write_text(SOK_C)
+    (proj / "t.dbc").write_text(DBC.replace("ESP_Mode", "ESP_Mode"))
+    nodes, edges = _run_sok(proj)
+    assert _links(nodes, edges) == {("MO_Torque", "SokVal_Torque"), ("ESP_Speed", "SokVal_Speed"), ("ESP_Mode", "SokVal_Mode")}
+    e = next(e for e in edges if e["relation"] == "carried_in" and e["source"].endswith("esp_mode"))
+    assert e["metadata"]["index"] == 2 and e["metadata"]["getter"] == "Sic_Data_CfgSokSigU8_ci"
+    data = json.loads(next(proj.glob("**/can_mapping.json")).read_text(encoding="utf-8"))
+    d = data["diagnostics"]
+    assert [r["comment"] for r in d["rows_not_in_dbc"]] == ["Unmapped_Sig"]          # position 3, no enum row
+    assert [g["index"] for g in d["getters_without_row"]] == [7]                      # enum 7 has no element
+    assert {r["config_index"] for r in data["mapping"] if r["dbc_signal"] == "MO_Torque"} == {0}
+
+
+def test_soksig_names_are_configurable(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "sok.h").write_text(SOK_H)
+    (proj / "sok.c").write_text(SOK_C.replace("SokSig_Data_CfgSig_ci", "My_Names").replace("Sic_Data_CfgSokSigU8_ci", "My_Map"))
+    assert _links(*_run_sok(proj)) == set()
+    assert len(_links(*_run_sok(proj, can_sok_table="My_Names", can_sok_map="My_Map"))) == 3
