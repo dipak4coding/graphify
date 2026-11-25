@@ -221,3 +221,68 @@ def test_soksig_names_are_configurable(proj, monkeypatch):
     (proj / "sok.c").write_text(SOK_C.replace("SokSig_Data_CfgSig_ci", "My_Names").replace("Sic_Data_CfgSokSigU8_ci", "My_Map"))
     assert _links(*_run_sok(proj)) == set()
     assert len(_links(*_run_sok(proj, can_sok_table="My_Names", can_sok_map="My_Map"))) == 3
+
+
+# ---- TX: return MACRO(value, <dbc signal name>) ---------------------------------------------------------------
+
+TX_C = '''#define SocSig_Out(x,y) (x)
+int Soc_Raw, Soc_Cal, Soc_Unused;
+int Helper(void) { return Soc_Cal + 1; }
+int SocSig_BestTorque(void) { int t = Soc_Raw * 2; return SocSig_Out(t + Helper(), MO_Torque); }
+int SocSig_BestSpeed(void) { if (Soc_Raw) { return SocSig_Out(Soc_Raw, ESP_Speed); } return SocSig_Out(0, ESP_Speed); }
+int SocSig_BestOther(void) { return SocSig_Out(Soc_Raw, No_Such_Signal); }
+int NotMatching(void) { return SocSig_Out(Soc_Unused, ESP_Mode); }
+'''
+
+
+def test_tx_return_macro_links_signal_function_and_sources(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "tx.c").write_text(TX_C)
+    from graphify.extractors import clang_c
+    clang_c.set_runtime_config(extractor="clang", dbc=str(proj / "t.dbc"), dbc_node="*")
+    nodes, edges = [], []
+    try:
+        clang_c.run_clang_pass([proj / "tx.c"], proj, nodes, edges)
+    finally:
+        clang_c.set_runtime_config()
+    lab = {n["id"]: n["label"] for n in nodes}
+    rel = lambda r: {(lab[e["source"]], lab[e["target"]]) for e in edges if e["relation"] == r and e["source"] in lab and e["target"] in lab}
+    assert rel("computed_by") == {("MO_Torque", "SocSig_BestTorque()"), ("ESP_Speed", "SocSig_BestSpeed()")}
+    d = {x for x in rel("derived_from") if x[0] in ("MO_Torque", "ESP_Speed")}
+    assert d == {("MO_Torque", "Soc_Raw"), ("MO_Torque", "Soc_Cal"), ("ESP_Speed", "Soc_Raw")}   # local t and the helper are followed
+    csv = next(proj.glob("**/can_tx_mapping.csv")).read_text(encoding="utf-8-sig").splitlines()
+    assert any(l.startswith("MO_Torque;MO_Msg") and "SocSig_Out" in l for l in csv)
+    assert any(l.startswith("No_Such_Signal") and l.endswith("not_in_dbc") for l in csv)
+
+
+def test_tx_function_pattern_is_configurable(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "tx.c").write_text(TX_C)
+    from graphify.extractors import clang_c
+    clang_c.set_runtime_config(extractor="clang", dbc=str(proj / "t.dbc"), dbc_node="*", can_tx_functions="NotMatching")
+    nodes, edges = [], []
+    try:
+        clang_c.run_clang_pass([proj / "tx.c"], proj, nodes, edges)
+    finally:
+        clang_c.set_runtime_config()
+    lab = {n["id"]: n["label"] for n in nodes}
+    assert {(lab[e["source"]], lab[e["target"]]) for e in edges if e["relation"] == "computed_by"} == {("ESP_Mode", "NotMatching()")}
+
+
+def test_tx_in_documentation(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "tx.c").write_text(TX_C)
+    from graphify import swdoc
+    from graphify.extractors import clang_c
+    clang_c.set_runtime_config(extractor="clang", dbc=str(proj / "t.dbc"), dbc_node="*")
+    nodes, edges = [], []
+    try:
+        clang_c.run_clang_pass([proj / "tx.c"], proj, nodes, edges)
+    finally:
+        clang_c.set_runtime_config()
+    res = swdoc.build_vault({"nodes": nodes, "edges": edges}, ["."])
+    notes = swdoc.can_notes(res["can"], res["stems"], res["cstems"])
+    sig = next(v for k, v in notes.items() if k.startswith("can/signals/") and "MO_Torque" in k)
+    assert "## Computed by" in sig and "SocSig_BestTorque" in sig and "SocSig_Out" in sig and "Soc_Raw" in sig
+    g = next(g for m in res["can"]["messages"] for g in m["signals"] if g["name"] == "ESP_Speed")
+    assert [t["label"] for t in g["tx"]] == ["SocSig_BestSpeed()"] and [l for _v, l in g["tx"][0]["sources"]] == ["Soc_Raw"]

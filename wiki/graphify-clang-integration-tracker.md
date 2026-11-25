@@ -700,3 +700,16 @@ Limits: not measured on real kku module; function running several times counts a
 | Join | same `join_can`; rows and rows tagged `src = "sok"` so the two index spaces (BilSig first member vs. SokSig position) never mix. Same edge `carried_in`, same CSV / JSON (`getter` column = the map array name), same diagnostics (comment not in DBC, enum without element, element without enum row, duplicate) |
 | Tests | `tests/test_can_map.py` +2 (9 total) |
 | Unverified | real rows; elements whose comment sits behind them instead of in front would be shifted by one; `#if`-disabled elements are skipped by clang (position counts only active elements) |
+
+## 63. CAN TX: `return MACRO(value, <dbc signal name>)` in `SocSig_Best*`
+
+| Item | Detail |
+|---|---|
+| Problem | The macro `#define MACRO(x,y) (x)` drops `y`, so the AST only has `(value)` and the label is lost |
+| Solution | `ClangExtractor._can_tx_scan`: source tokens of the `return` statement (`cursor.get_tokens()` still has the unexpanded text, verified): `return MACRO ( a , label )` -> split at the top-level comma; label = one identifier or a string; exactly 2 arguments |
+| Sources | variables of the function's return summary from the data-flow pass (`flow.summaries[fn]["ret"]`): follows locals and helper functions. Limit: all `return` statements of the function are merged (one return per function is exact) |
+| Join | `can_map.join_can_tx`: label = DBC signal name (exact, else normalized); edges `can_signal --computed_by--> function` and `can_signal --derived_from--> variable` (metadata `via` = macro, `can_tx`); `can_tx_mapping.csv` (`;`, columns dbc_signal, message, frame_id, direction, function, macro, file, line, sources, status; label not in DBC = status `not_in_dbc`) |
+| Config | `can_tx_functions` (glob list, default `SocSig_Best*`) / `--can-tx-functions`; active only with `--dbc` |
+| Docs | Signal page (Obsidian + HTML): section "Computed by" with function, macro, line and source variables |
+| Tests | `tests/test_can_map.py` +3 (11 -> 12 with docs): links, sources through local and helper, not-in-DBC row, pattern config, notes + data |
+| Unverified | real rows; a macro with more than 2 arguments or a label that is an expression is skipped |

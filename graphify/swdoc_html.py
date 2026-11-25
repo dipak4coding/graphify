@@ -239,7 +239,9 @@ def build_data(res: dict, title: str, dataset: str = "") -> dict:
              "a": m["attrs"], "g": [{"n": g["name"], "t": g["desc"], "b": g["start"], "l": g["len"], "o": g["order"],
                                      "sg": g["signed"], "f": g["factor"], "of": g["offset"], "lo": g["min"], "hi": g["max"],
                                      "u": g["unit"], "e": g["enum"], "r": g["rx"], "x": g["mux"],
-                                     "v": [[idx.get(lk["var"], -1), lk["label"], lk["index"], lk["getter"]] for lk in g.get("links", [])]} for g in m["signals"]]}
+                                     "v": [[idx.get(lk["var"], -1), lk["label"], lk["index"], lk["getter"]] for lk in g.get("links", [])],
+                                     "tx": [[idx.get(t["fn"], -1), t["label"], t["macro"], t["line"], [[idx.get(v, -1), lab] for v, lab in t["sources"]]]
+                                            for t in g.get("tx", [])]} for g in m["signals"]]}
             for m in can["messages"]]}
         for k, m in enumerate(can["m"]):                    # variable page: which CAN signal fills it
             for gi, g in enumerate(m["g"]):
@@ -420,8 +422,10 @@ function pageSig(k,gi){const m=D.can&&D.can.m[k],g=m&&m.g[gi];if(!g){main.innerH
  if(g.x)h+=`<p class="mut">Multiplexed: ${esc(g.x)}</p>`;
  h+=`<p>Receivers: ${g.r.map(r=>r===D.can.ecu?'<b>'+esc(r)+'</b>':esc(r)).join(', ')||'-'}</p>`;
  if(ks.length)h+=`<h3>Value / enum table</h3>`+table(['Value','Meaning'],ks.slice(0,200).map(q=>[esc(q),esc(g.e[q])]));
+ h+=``;
+ if((g.tx||[]).length)h+=`<h3>Computed by (the function returns the value of this signal)</h3>`+table(['Function','Macro','Line','Variables the value comes from'],g.tx.map(([f,fl,mc,ln,src])=>[f>=0?A(f):`<code>${esc(fl)}</code>`,`<code>${esc(mc)}</code>`,ln,src.map(([i,l])=>i>=0?A(i):`<code>${esc(l)}</code>`).join(', ')||'-']));
  h+=`<h3>C variable (where the CAN value is stored)</h3>`;
- if(!g.v.length)h+=`<p class="mut">Not linked to a variable (no row in the signal configuration table, or no getter call found).</p>`;
+ if(!g.v.length&&!(g.tx||[]).length)h+=`<p class="mut">Not linked to a variable (no row in the signal configuration table, or no getter call found).</p>`;
  g.v.forEach(([i,l,ix,gt])=>{h+=table(['Variable','Signal index','Getter'],[[i>=0?A(i):`<code>${esc(l)}</code> <span class="mut">(not in the exported scope)</span>`,esc(ix),`<code>${esc(gt)}</code>`]]);
   if(i>=0){const x=IT[i];if(x.wr.length)h+=`<h4>Written by</h4><p>${list(x.wr.map(r=>r[0]),40)}</p>`;if(x.rd.length)h+=`<h4>Read by</h4><p>${list(x.rd.map(r=>r[0]),60)}</p>`;
    const tr=traceRows(i,4,80);if(tr.length)h+=`<h3>Derived signals (where the value goes after the variable is filled)</h3><p class="mut">Level 1 = computed from the CAN variable, level 2 = computed from level 1, and so on. Plausibility checks, debouncing and filters show up as the functions in the last column.</p>`+table(['Level','Variable','Computed from'].concat(HAS_T?['Timing','Delay so far']:[],['Kind','In function']),tr.map(([l,v,d,s,dl])=>[l,A(v),A(s)].concat(HAS_T?[tmTxt(d),dl]:[],[kindTxt(d),list(d[3],4)])))}});

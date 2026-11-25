@@ -140,3 +140,59 @@ def write_outputs(result: dict, out_dir) -> tuple:
     jp.write_text(json.dumps({"stats": result["stats"], "diagnostics": result["diagnostics"], "mapping": result["mapping"]},
                              indent=1, ensure_ascii=False), encoding="utf-8")
     return cp, jp
+
+
+TX_COLUMNS = ["dbc_signal", "message", "frame_id", "direction", "function", "macro", "file", "line", "sources", "status"]
+
+
+def join_can_tx(nodes: list, edges: list, tx: list, out_dir=None) -> dict:
+    """TX side: ``return MACRO(value, <dbc signal name>)`` -> edges ``can_signal --computed_by--> function`` and
+    ``can_signal --derived_from--> variable`` (the variables the function's return value comes from)."""
+    by_id = {n["id"]: n for n in nodes if n.get("id")}
+    by_name, by_norm = {}, {}
+    for n in nodes:
+        if n.get("type") == "can_signal":
+            by_name.setdefault(n["label"], []).append(n)
+            by_norm.setdefault(_norm(n["label"]), []).append(n)
+    seen = {(e.get("source"), e.get("target"), e.get("relation")) for e in edges}
+    rows, not_in_dbc, linked = [], [], set()
+    for t in tx:
+        fn = by_id.get(t["function"])
+        cands = by_name.get(t["label"]) or by_norm.get(_norm(t["label"])) or []
+        exact = bool(by_name.get(t["label"]))
+        if fn is None:
+            continue
+        if not cands:
+            not_in_dbc.append({"label": t["label"], "function": fn.get("label"), "at": f"{t['file']}:{t['line']}"})
+            continue
+        status = ("exact" if exact else "normalized") if len(cands) == 1 else "ambiguous"
+        srcs = [v for v in t.get("sources", []) if v in by_id]
+        for sg in cands:
+            m = sg.get("metadata") or {}
+            linked.add(sg["id"])
+            rows.append({"dbc_signal": sg["label"], "message": m.get("message"), "frame_id": m.get("frame_id"),
+                         "direction": m.get("direction", ""), "function": fn.get("label"), "macro": t["macro"],
+                         "file": t["file"], "line": t["line"], "sources": " ".join(by_id[v].get("label", "") for v in srcs),
+                         "status": status})
+            meta = {"macro": t["macro"], "line": t["line"], "file": t["file"], "match": status}
+            for tgt, rel, md in [(fn["id"], "computed_by", meta)] + [
+                    (v, "derived_from", {"functions": [fn["id"]], "lines": [t["line"]], "via": [t["macro"]], "control_only": False,
+                                         "can_tx": True}) for v in srcs]:
+                key = (sg["id"], tgt, rel)
+                if key in seen:
+                    continue
+                seen.add(key)
+                edges.append({"source": sg["id"], "target": tgt, "relation": rel, "confidence": "EXTRACTED" if rel == "computed_by" else "INFERRED",
+                              "source_file": t["file"], "weight": 1.0, "context": "can_tx" if rel == "computed_by" else "flow",
+                              "metadata": md, "source_location": f"L{t['line']}"})
+    stats = {"functions": len(tx), "linked_signals": len(linked), "not_in_dbc": len(not_in_dbc)}
+    if out_dir is not None:
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        with open(out / "can_tx_mapping.csv", "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=TX_COLUMNS, delimiter=";", extrasaction="ignore")
+            w.writeheader()
+            w.writerows(rows)
+            for d in not_in_dbc:
+                w.writerow({"dbc_signal": d["label"], "function": d["function"], "file": d["at"], "status": "not_in_dbc"})
+    return {"mapping": rows, "not_in_dbc": not_in_dbc, "stats": stats}

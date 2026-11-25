@@ -74,6 +74,7 @@ class ClangConfig:
     dbc_node: str = "TCU"  # ECU of the DBC: only its TX/RX messages are added ("" or "*" = whole bus)
     can_table: str = "BilSig_Data_CfgSig_ci"  # array of signal config structs (first member = signal index, trailing // comment = CAN signal name)
     can_reader: str = "Sic_HolenSignale"      # function whose body calls the getters getter(index, &variable)
+    can_tx_functions: str = "SocSig_Best*"    # glob(s), comma separated: functions that end in `return MACRO(value, <dbc signal name>)`
     can_sok_table: str = "SokSig_Data_CfgSig_ci"   # array whose elements are numbered 0,1,2.. ; the comment in FRONT of an element = CAN signal name (values ignored)
     can_sok_map: str = "Sic_Data_CfgSokSigU8_ci"   # array of rows {<enum = element number>, &<variable>}
     dbc: str | None = None  # path to the CAN matrix (.dbc); adds can_message / can_signal nodes
@@ -112,7 +113,7 @@ def set_runtime_config(**kwargs) -> None:
 
 def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
     cfg = ClangConfig(base_dir=str(base_dir))
-    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "par", "par_name", "debug", "header_declarations", "parse_comments", "data_flow"):
+    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_tx_functions", "par", "par_name", "debug", "header_declarations", "parse_comments", "data_flow"):
         if key in data:
             setattr(cfg, key, data[key])
     if "extractor" in data:
@@ -138,7 +139,7 @@ def _override() -> dict:
 
 def _apply_override(cfg: ClangConfig, ov: dict) -> ClangConfig:
     """CLI/env wins over the config file; absolute paths from the CLI need no base_dir."""
-    for key in ("compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "par", "par_name", "extractor", "debug"):
+    for key in ("compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_tx_functions", "par", "par_name", "extractor", "debug"):
         if key in ov:
             setattr(cfg, key, ov[key])
     if "enabled" in ov:
@@ -453,6 +454,7 @@ class ClangExtractor:
         self._cur_params: dict = {}       # (name, line, col) of a pointer PARM_DECL -> parameter index
         self.ptr_to_rom: dict = {}
         self.can_rows: list = []          # config table rows: {index, name, file, line}
+        self.can_tx: list = []            # TX functions: {function, label, macro, line, file, sources}
         self.can_calls: list = []         # getter calls in the reader function: {index, var, getter, file, line}
         self.flow = FlowRecorder(self) if cfg.data_flow else None
         self._leaf_cache: dict = {}
@@ -876,6 +878,46 @@ class ClangExtractor:
                 self._can_sok(top, sfile)
             elif top.kind == K.FUNCTION_DECL and top.spelling == reader and top.is_definition():
                 self._can_getters(top, sfile)
+
+    def _can_tx_scan(self, fn, func_id, sfile: str) -> None:
+        """`return MACRO(value, can_label);` in a function matching can_tx_functions. The macro drops its 2nd argument, so
+        the AST only has `(value)`; the label is read from the source tokens of the return statement."""
+        import fnmatch
+        pats = [p.strip() for p in str(self.cfg.can_tx_functions).split(",") if p.strip()]
+        if not any(fnmatch.fnmatchcase(fn.spelling, p) for p in pats):
+            return
+        K = self.K
+        stack = list(fn.get_children())
+        while stack:
+            c = stack.pop()
+            if c.kind != K.RETURN_STMT:
+                stack.extend(c.get_children())
+                continue
+            toks = []
+            for t in c.get_tokens():
+                if t.spelling == ";":
+                    break
+                toks.append(t.spelling)
+            if len(toks) < 6 or toks[0] != "return" or toks[2] != "(" or toks[-1] != ")":
+                continue
+            args, depth, cur = [], 0, []
+            for t in toks[3:-1]:
+                if t in "([{":
+                    depth += 1
+                elif t in ")]}":
+                    depth -= 1
+                if t == "," and depth == 0:
+                    args.append(cur)
+                    cur = []
+                else:
+                    cur.append(t)
+            args.append(cur)
+            if len(args) != 2 or len(args[1]) != 1:
+                continue
+            label = args[1][0].strip('"')
+            if label and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", label):
+                self.can_tx.append({"function": func_id, "label": label, "macro": toks[1], "line": c.location.line,
+                                    "file": self.sf(sfile), "sources": []})
 
     def _init_list(self, decl):
         K = self.K
@@ -1545,6 +1587,8 @@ class ClangExtractor:
                 self.walk(child, func_id, fpath)
             if self.flow is not None:
                 self.flow.record_function(cursor, func_id, fpath)
+            if self.cfg.can_tx_functions and self.cfg.dbc:
+                self._can_tx_scan(cursor, func_id, fpath)
             self._cur_fn_id, self._cur_params = saved
             return
 
@@ -1805,6 +1849,10 @@ class ClangExtractor:
     def _add_flow_edges(self, edges: dict, remap: dict) -> None:
         """derived_from (data flow), `calls` argument variables and indirect_call (function pointers)."""
         derived, arg_sites, indirect, self_feed = self.flow.edges(remap, self.nodes)
+        for tx in self.can_tx:
+            summ = (getattr(self.flow, "summaries", {}) or {}).get(tx["function"]) or {}
+            vs = {remap.get(it[0][1], it[0][1]) for it in summ.get("ret", ()) if it[0][0] == "g"}
+            tx["sources"] = sorted(v for v in vs if v in self.nodes)
         for vid, fns in self_feed.items():
             self.nodes[vid].setdefault("metadata", {})["feeds_itself"] = fns
         for e in derived:
@@ -2285,7 +2333,21 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
                 except Exception as exc:
                     _warn_once("canmapfail", f"CAN mapping step failed: {exc}")
                     LOG.exception("CAN mapping step failed")
-            elif stats.get("dbc"):
+            if stats.get("dbc") and ex.can_tx:
+                try:
+                    from graphify.can_map import join_can_tx
+                    from graphify.paths import out_path
+                    outp = out_path()
+                    outp = outp if outp.is_absolute() else root / outp
+                    txr = join_can_tx(all_nodes, all_edges, ex.can_tx, outp)
+                    stats["can_tx"] = txr["stats"]
+                    print(f"[graphify] CAN TX: {txr['stats']['functions']} function(s), {txr['stats']['linked_signals']} DBC signals linked", file=sys.stderr)
+                    if txr["stats"]["not_in_dbc"]:
+                        _warn_once("cantx_nodbc", f"CAN TX: {txr['stats']['not_in_dbc']} label(s) are not a DBC signal (see can_tx_mapping.csv)")
+                except Exception as exc:
+                    _warn_once("cantxfail", f"CAN TX step failed: {exc}")
+                    LOG.exception("CAN TX step failed")
+            if stats.get("dbc") and not (ex.can_rows or ex.can_calls):
                 LOG.info("CAN mapping: no table '%s' / reader '%s' found in the parsed C files", cfg.can_table, cfg.can_reader)
 
     par_path = cfg.resolve(cfg.par)
