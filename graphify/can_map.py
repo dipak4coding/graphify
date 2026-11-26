@@ -142,12 +142,13 @@ def write_outputs(result: dict, out_dir) -> tuple:
     return cp, jp
 
 
-TX_COLUMNS = ["dbc_signal", "message", "frame_id", "direction", "function", "macro", "file", "line", "sources", "status"]
+TX_COLUMNS = ["dbc_signal", "message", "frame_id", "direction", "function", "macro", "file", "line", "sources", "constant", "status"]
 
 
 def join_can_tx(nodes: list, edges: list, tx: list, out_dir=None) -> dict:
     """TX side: ``return MACRO(value, <dbc signal name>)`` -> edges ``can_signal --computed_by--> function`` and
-    ``can_signal --derived_from--> variable`` (the variables the function's return value comes from)."""
+    ``can_signal --derived_from--> variable`` (the variables the function's return value comes from). A constant scalar value
+    (``return MACRO(5, Sig)``) is kept as ``constants`` on the ``computed_by`` edge."""
     by_id = {n["id"]: n for n in nodes if n.get("id")}
     by_name, by_norm = {}, {}
     for n in nodes:
@@ -155,8 +156,16 @@ def join_can_tx(nodes: list, edges: list, tx: list, out_dir=None) -> dict:
             by_name.setdefault(n["label"], []).append(n)
             by_norm.setdefault(_norm(n["label"]), []).append(n)
     seen = {(e.get("source"), e.get("target"), e.get("relation")) for e in edges}
-    rows, not_in_dbc, linked = [], [], set()
+    # one entry per (function, label): several return statements are merged (lines, constants, sources)
+    groups: dict = {}
     for t in tx:
+        g = groups.setdefault((t["function"], t["label"]), {**t, "lines": [], "constants": [], "sources": []})
+        g["lines"].append(t["line"])
+        if t.get("constant") is not None and t["constant"] not in g["constants"]:
+            g["constants"].append(t["constant"])
+        g["sources"] = sorted(set(g["sources"]) | set(t.get("sources", [])))
+    rows, not_in_dbc, linked = [], [], set()
+    for t in groups.values():
         fn = by_id.get(t["function"])
         cands = by_name.get(t["label"]) or by_norm.get(_norm(t["label"])) or []
         exact = bool(by_name.get(t["label"]))
@@ -167,16 +176,19 @@ def join_can_tx(nodes: list, edges: list, tx: list, out_dir=None) -> dict:
             continue
         status = ("exact" if exact else "normalized") if len(cands) == 1 else "ambiguous"
         srcs = [v for v in t.get("sources", []) if v in by_id]
+        if not srcs and t["constants"]:
+            status += "+constant"
         for sg in cands:
             m = sg.get("metadata") or {}
             linked.add(sg["id"])
             rows.append({"dbc_signal": sg["label"], "message": m.get("message"), "frame_id": m.get("frame_id"),
                          "direction": m.get("direction", ""), "function": fn.get("label"), "macro": t["macro"],
-                         "file": t["file"], "line": t["line"], "sources": " ".join(by_id[v].get("label", "") for v in srcs),
-                         "status": status})
-            meta = {"macro": t["macro"], "line": t["line"], "file": t["file"], "match": status}
+                         "file": t["file"], "line": min(t["lines"]), "sources": " ".join(by_id[v].get("label", "") for v in srcs),
+                         "constant": " ".join(t["constants"]), "status": status})
+            meta = {"macro": t["macro"], "line": min(t["lines"]), "lines": sorted(set(t["lines"])), "file": t["file"], "match": status,
+                    "constants": list(t["constants"])}
             for tgt, rel, md in [(fn["id"], "computed_by", meta)] + [
-                    (v, "derived_from", {"functions": [fn["id"]], "lines": [t["line"]], "via": [t["macro"]], "control_only": False,
+                    (v, "derived_from", {"functions": [fn["id"]], "lines": sorted(set(t["lines"])), "via": [t["macro"]], "control_only": False,
                                          "can_tx": True}) for v in srcs]:
                 key = (sg["id"], tgt, rel)
                 if key in seen:
@@ -184,8 +196,9 @@ def join_can_tx(nodes: list, edges: list, tx: list, out_dir=None) -> dict:
                 seen.add(key)
                 edges.append({"source": sg["id"], "target": tgt, "relation": rel, "confidence": "EXTRACTED" if rel == "computed_by" else "INFERRED",
                               "source_file": t["file"], "weight": 1.0, "context": "can_tx" if rel == "computed_by" else "flow",
-                              "metadata": md, "source_location": f"L{t['line']}"})
-    stats = {"functions": len(tx), "linked_signals": len(linked), "not_in_dbc": len(not_in_dbc)}
+                              "metadata": md, "source_location": f"L{min(t['lines'])}"})
+    stats = {"functions": len(groups), "linked_signals": len(linked), "not_in_dbc": len(not_in_dbc),
+             "constant_only": sum(1 for r in rows if not r["sources"] and r["constant"])}
     if out_dir is not None:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)

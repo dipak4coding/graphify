@@ -713,3 +713,13 @@ Limits: not measured on real kku module; function running several times counts a
 | Docs | Signal page (Obsidian + HTML): section "Computed by" with function, macro, line and source variables |
 | Tests | `tests/test_can_map.py` +3 (11 -> 12 with docs): links, sources through local and helper, not-in-DBC row, pattern config, notes + data |
 | Unverified | real rows; a macro with more than 2 arguments or a label that is an expression is skipped |
+
+## 64. CAN: constants on TX, more RX arrays, scan report
+
+| Item | Detail |
+|---|---|
+| TX constant | `return MACRO(5, Sig)` / enum / define: when the value argument has no variable and no call, clang folds it (`_tx_constant`; float literals from tokens). Stored as `constants` on the `computed_by` edge, column `constant` in `can_tx_mapping.csv`, column "Constant value" on the signal page (Obsidian + HTML); status `exact+constant` when there is no source variable. Several returns of a function are merged (lines, constants, sources) |
+| RX arrays | `can_maps` (glob list, default `Sic_Data_CfgSigU8_ci,Sic_Data_CfgSigU16_ci`): rows `{index define, &var}` for the BilSig table comments (same index space as the getters; matching by comment as before). Also accepted in all map arrays: `[IDX] = &var` (designated; clang gives an UNEXPOSED_EXPR with 2 children, which was silently skipped before), flat pairs `IDX, &var, ...`, casts around the address; arrays defined in a header (scanned once); names may be globs |
+| Sok mismatch | Real data was not available, so no certain cause. Found and fixed: designated initializers `[ENUM] = &var` were skipped without a message; arrays in headers were not scanned. New `graphify-out/can_scan.json` + stderr lines: per array the file, row count, sample, skipped rows with the reason; configured names that were not found at all |
+| Config | `can_maps` / `--can-maps`; globs also for `can_sok_table`, `can_sok_map` |
+| Tests | `tests/test_can_map.py` 12 -> 16 |

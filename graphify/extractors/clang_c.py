@@ -75,6 +75,7 @@ class ClangConfig:
     can_table: str = "BilSig_Data_CfgSig_ci"  # array of signal config structs (first member = signal index, trailing // comment = CAN signal name)
     can_reader: str = "Sic_HolenSignale"      # function whose body calls the getters getter(index, &variable)
     can_tx_functions: str = "SocSig_Best*"    # glob(s), comma separated: functions that end in `return MACRO(value, <dbc signal name>)`
+    can_maps: str = "Sic_Data_CfgSigU8_ci,Sic_Data_CfgSigU16_ci"   # glob(s): arrays of rows {<signal index>, &<variable>} for the can_table signals
     can_sok_table: str = "SokSig_Data_CfgSig_ci"   # array whose elements are numbered 0,1,2.. ; the comment in FRONT of an element = CAN signal name (values ignored)
     can_sok_map: str = "Sic_Data_CfgSokSigU8_ci"   # array of rows {<enum = element number>, &<variable>}
     dbc: str | None = None  # path to the CAN matrix (.dbc); adds can_message / can_signal nodes
@@ -113,7 +114,7 @@ def set_runtime_config(**kwargs) -> None:
 
 def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
     cfg = ClangConfig(base_dir=str(base_dir))
-    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_tx_functions", "par", "par_name", "debug", "header_declarations", "parse_comments", "data_flow"):
+    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_tx_functions", "can_maps", "par", "par_name", "debug", "header_declarations", "parse_comments", "data_flow"):
         if key in data:
             setattr(cfg, key, data[key])
     if "extractor" in data:
@@ -139,7 +140,7 @@ def _override() -> dict:
 
 def _apply_override(cfg: ClangConfig, ov: dict) -> ClangConfig:
     """CLI/env wins over the config file; absolute paths from the CLI need no base_dir."""
-    for key in ("compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_tx_functions", "par", "par_name", "extractor", "debug"):
+    for key in ("compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_tx_functions", "can_maps", "par", "par_name", "extractor", "debug"):
         if key in ov:
             setattr(cfg, key, ov[key])
     if "enabled" in ov:
@@ -454,6 +455,8 @@ class ClangExtractor:
         self._cur_params: dict = {}       # (name, line, col) of a pointer PARM_DECL -> parameter index
         self.ptr_to_rom: dict = {}
         self.can_rows: list = []          # config table rows: {index, name, file, line}
+        self.can_scan: list = []          # what the CAN scan found per array: {array, role, file, line, rows, sample, skipped}
+        self._can_done: set = set()
         self.can_tx: list = []            # TX functions: {function, label, macro, line, file, sources}
         self.can_calls: list = []         # getter calls in the reader function: {index, var, getter, file, line}
         self.flow = FlowRecorder(self) if cfg.data_flow else None
@@ -847,15 +850,40 @@ class ClangExtractor:
                     return c
         return ""
 
+    def _can_role(self, name: str):
+        """Which CAN array is this? (names may be globs, comma separated)"""
+        import fnmatch
+        cfg = self.cfg
+
+        def hit(pats):
+            return any(fnmatch.fnmatchcase(name, p.strip()) for p in str(pats or "").split(",") if p.strip())
+        if hit(cfg.can_sok_table):
+            return "sok_table"
+        if hit(cfg.can_sok_map):
+            return "sok_map"
+        if hit(cfg.can_maps):
+            return "sig_map"
+        return None
+
     def _can_scan(self, tu, sfile: str) -> None:
-        """The configured table (rows: first member = signal index, trailing comment = CAN signal name) and the
-        getter calls `getter(<index>, &<variable>)` inside the configured reader function."""
+        """The configured table (rows: first member = signal index, trailing comment = CAN signal name), the arrays that
+        hold the variable addresses ({index, &variable}) and the getter calls `getter(<index>, &<variable>)` inside the
+        configured reader function. The arrays are found in headers too (once)."""
         K, cfg = self.K, self.cfg
         table, reader = cfg.can_table, cfg.can_reader
         lines = None
         for top in tu.cursor.get_children():
             loc = top.location
-            if not loc.file or str(loc.file) != str(sfile):
+            if not loc.file:
+                continue
+            here = str(loc.file) == str(sfile)
+            if top.kind == K.VAR_DECL and top.is_definition() and top.spelling:
+                role = self._can_role(top.spelling)
+                if role and (here or (top.spelling, str(loc.file)) not in self._can_done):
+                    self._can_done.add((top.spelling, str(loc.file)))
+                    self._can_array(top, str(loc.file), role)
+                    continue
+            if not here:
                 continue
             if top.kind == K.VAR_DECL and top.spelling == table and top.is_definition():
                 if lines is None:
@@ -874,8 +902,6 @@ class ClangExtractor:
                     first = " ".join(t.spelling for t in kids[0].get_tokens()) if kids else ""
                     self.can_rows.append({"index": idx, "first": first, "name": name, "file": self.sf(sfile),
                                           "line": row.extent.start.line})
-            elif top.kind == K.VAR_DECL and top.is_definition() and top.spelling in (cfg.can_sok_table, cfg.can_sok_map) and top.spelling:
-                self._can_sok(top, sfile)
             elif top.kind == K.FUNCTION_DECL and top.spelling == reader and top.is_definition():
                 self._can_getters(top, sfile)
 
@@ -917,7 +943,29 @@ class ClangExtractor:
             label = args[1][0].strip('"')
             if label and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", label):
                 self.can_tx.append({"function": func_id, "label": label, "macro": toks[1], "line": c.location.line,
-                                    "file": self.sf(sfile), "sources": []})
+                                    "file": self.sf(sfile), "sources": [], "constant": self._tx_constant(c, args[0])})
+
+    def _tx_constant(self, ret, value_toks):
+        """The value argument when it is a constant scalar (no variable, no call in it): `5`, `0x10`, `SOME_ENUM`, `-1`, `1.5f`.
+        Returns the value as text (enum / define names are folded by clang), or None."""
+        K = self.K
+        vals = [k for k in ret.get_children()]
+        if not vals:
+            return None
+        expr = vals[0]
+        stack = [expr]
+        while stack:
+            c = stack.pop()
+            if c.kind == K.CALL_EXPR:
+                return None
+            if c.kind == K.DECL_REF_EXPR and c.referenced is not None and c.referenced.kind in (K.VAR_DECL, K.PARM_DECL):
+                return None
+            stack.extend(c.get_children())
+        v = self._const_int(expr)
+        if v is not None:
+            return str(v)
+        txt = "".join(value_toks)
+        return txt if re.match(r"^[-+()0-9.eExXa-fA-FuUlL]+$", txt) and re.search(r"[0-9]", txt) else None
 
     def _init_list(self, decl):
         K = self.K
@@ -937,39 +985,71 @@ class ClangExtractor:
         a, b = found[-1]
         return (a or b).split("//")[0].strip(" \t\r\n*/")
 
-    def _can_sok(self, decl, sfile: str) -> None:
-        """``SokSig_Data_CfgSig_ci``: element k (0, 1, 2, ...) is named by the comment in front of it, values are ignored.
-        ``Sic_Data_CfgSokSigU8_ci``: rows ``{ <enum = element number>, &<variable> }``. Both go into the same lists as the
-        BilSig mechanism, tagged ``src = "sok"`` so the two index spaces never mix."""
+    def _can_array(self, decl, sfile: str, role: str) -> None:
+        """``sok_table`` (SokSig_Data_CfgSig_ci): element k (0, 1, 2, ...) is named by the comment in front of it, values are
+        ignored. ``sok_map`` (Sic_Data_CfgSokSigU8_ci) and ``sig_map`` (Sic_Data_CfgSigU8_ci / U16): rows
+        ``{ <index>, &<variable> }``, ``[<index>] = &<variable>`` or flat pairs. The sok arrays are tagged ``src = "sok"`` so
+        their index space never mixes with the BilSig one."""
+        info = {"array": decl.spelling, "role": role, "file": self.sf(sfile), "line": decl.location.line, "rows": 0, "sample": [], "skipped": []}
+        self.can_scan.append(info)
         init = self._init_list(decl)
         if init is None:
+            info["skipped"].append({"line": decl.location.line, "why": "no initializer list (not a definition with { ... })"})
             return
         kids = list(init.get_children())
-        if decl.spelling == self.cfg.can_sok_table:
+        if role == "sok_table":
             text = Path(sfile).read_text(encoding="latin-1", errors="replace")
             prev = init.extent.start.offset + 1
             for k, el in enumerate(kids):
                 a, z = el.extent.start.offset, el.extent.end.offset
-                self.can_rows.append({"index": k, "first": "", "name": self._front_comment(text[prev:a]) if a >= prev else "",
-                                      "file": self.sf(sfile), "line": el.extent.start.line, "src": "sok"})
+                name = self._front_comment(text[prev:a]) if a >= prev else ""
+                self.can_rows.append({"index": k, "first": "", "name": name, "file": self.sf(sfile),
+                                      "line": el.extent.start.line, "src": "sok"})
+                if not name:
+                    info["skipped"].append({"line": el.extent.start.line, "why": f"element {k}: no comment in front of it"})
+                elif len(info["sample"]) < 4:
+                    info["sample"].append(f"{k}: {name}")
                 prev = z
+            info["rows"] = len(kids)
             return
-        for row in kids:
-            row = self._peel(row)
-            parts = list(row.get_children()) if row.kind == self.K.INIT_LIST_EXPR else []
-            if len(parts) < 2:
-                continue
-            idx = self._const_int(parts[0])
-            a = self._peel(parts[1])
+        src = "sok" if role == "sok_map" else ""
+        pairs = []                       # (index cursor, address cursor, line)
+        flat = bool(kids) and not any(self._peel(k).kind == self.K.INIT_LIST_EXPR or self._designated(k) for k in kids)
+        if flat:
+            pairs = [(kids[i], kids[i + 1], kids[i].extent.start.line) for i in range(0, len(kids) - 1, 2)]
+        else:
+            for row in kids:
+                row = row if self._designated(row) else self._peel(row)
+                parts = list(row.get_children())
+                if (row.kind == self.K.INIT_LIST_EXPR or self._designated(row)) and len(parts) >= 2:
+                    pairs.append((parts[0], parts[1], row.extent.start.line))
+                else:
+                    info["skipped"].append({"line": row.extent.start.line, "why": f"row has {len(parts)} part(s), expected {{index, &variable}} or [index] = &variable"})
+        for ic, ac, line in pairs:
+            idx = self._const_int(ic)
+            a = self._peel(ac)
             if self._c_op_kind(a, "clang_getCursorUnaryOperatorKind") == _C_UNOP_ADDROF:
                 ch = list(a.get_children())
                 a = self._peel(ch[0]) if ch else a
             ref, _extras = self._lvalue_root(a)
-            base = {"index": idx, "getter": decl.spelling, "file": self.sf(sfile), "line": row.extent.start.line, "src": "sok"}
+            base = {"index": idx, "getter": decl.spelling, "file": self.sf(sfile), "line": line, "src": src}
+            info["rows"] += 1
             if idx is None or ref is None:
-                self.can_calls.append({**base, "var": None, "note": "enum not constant" if idx is None else "no variable"})
+                why = "index is not a constant" if idx is None else "second part is not the address of a variable"
+                info["skipped"].append({"line": line, "why": why})
+                self.can_calls.append({**base, "var": None, "note": why})
             else:
                 self.can_calls.append({**base, "var": self._global_var(ref, sfile), "var_name": ref.referenced.spelling})
+                if len(info["sample"]) < 4:
+                    info["sample"].append(f"{idx}: &{ref.referenced.spelling}")
+
+    def _designated(self, c) -> bool:
+        toks = []
+        for t in c.get_tokens():
+            toks.append(t.spelling)
+            if len(toks) >= 1:
+                break
+        return c.kind == self.K.UNEXPOSED_EXPR and bool(toks) and toks[0] == "["
 
     def _can_getters(self, fn, sfile: str) -> None:
         K = self.K
@@ -2193,6 +2273,36 @@ def _write_report(root: Path, cfg: ClangConfig, ex, stats: dict, c_files: list) 
         return None
 
 
+def _can_scan_report(ex, cfg, root) -> None:
+    """Says which of the configured CAN arrays / functions were found, how many rows, and which rows were skipped and why
+    (graphify-out/can_scan.json + a few lines on stderr). This is the first place to look when a mapping is missing."""
+    import fnmatch
+    from graphify.paths import out_path
+    found = {i["array"] for i in ex.can_scan}
+    rows = {}
+    for r in ex.can_rows:
+        rows[r.get("src", "")] = rows.get(r.get("src", ""), 0) + 1
+    report = {"arrays": ex.can_scan, "table_rows": {"bilsig": rows.get("", 0), "sok": rows.get("sok", 0)},
+              "map_rows": {"bilsig": sum(1 for c in ex.can_calls if not c.get("src")), "sok": sum(1 for c in ex.can_calls if c.get("src") == "sok")},
+              "not_found": []}
+    if not rows.get("", 0):
+        report["not_found"].append({"config": "can_table", "name": cfg.can_table})
+    for role, pats in (("can_sok_table", cfg.can_sok_table), ("can_sok_map", cfg.can_sok_map), ("can_maps", cfg.can_maps)):
+        for pat in [x.strip() for x in str(pats or "").split(",") if x.strip()]:
+            if not any(fnmatch.fnmatchcase(a, pat) for a in found):
+                report["not_found"].append({"config": role, "name": pat})
+    outp = out_path()
+    outp = outp if outp.is_absolute() else Path(root) / outp
+    outp.mkdir(parents=True, exist_ok=True)
+    (outp / "can_scan.json").write_text(json.dumps(report, indent=1, ensure_ascii=False), encoding="utf-8")
+    for i in ex.can_scan:
+        sk = len(i["skipped"])
+        print(f"[graphify] CAN scan: {i['array']} ({i['role']}) {i['file']}:{i['line']} -> {i['rows']} row(s)"
+              + (f", {sk} skipped (see can_scan.json)" if sk else ""), file=sys.stderr)
+    for nf in report["not_found"]:
+        print(f"[graphify] CAN scan: {nf['config']} '{nf['name']}' not found in any parsed C file or included header", file=sys.stderr)
+
+
 def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
     """Run the clang (+ A2L) pass and merge its output into ``all_nodes`` / ``all_edges``.
 
@@ -2347,6 +2457,11 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
                 except Exception as exc:
                     _warn_once("cantxfail", f"CAN TX step failed: {exc}")
                     LOG.exception("CAN TX step failed")
+            if stats.get("dbc"):
+                try:
+                    _can_scan_report(ex, cfg, root)
+                except Exception as exc:
+                    LOG.exception("CAN scan report failed: %s", exc)
             if stats.get("dbc") and not (ex.can_rows or ex.can_calls):
                 LOG.info("CAN mapping: no table '%s' / reader '%s' found in the parsed C files", cfg.can_table, cfg.can_reader)
 

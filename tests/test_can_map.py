@@ -226,11 +226,13 @@ def test_soksig_names_are_configurable(proj, monkeypatch):
 # ---- TX: return MACRO(value, <dbc signal name>) ---------------------------------------------------------------
 
 TX_C = '''#define SocSig_Out(x,y) (x)
+enum { OFF_VAL = 0x10 };
 int Soc_Raw, Soc_Cal, Soc_Unused;
 int Helper(void) { return Soc_Cal + 1; }
 int SocSig_BestTorque(void) { int t = Soc_Raw * 2; return SocSig_Out(t + Helper(), MO_Torque); }
 int SocSig_BestSpeed(void) { if (Soc_Raw) { return SocSig_Out(Soc_Raw, ESP_Speed); } return SocSig_Out(0, ESP_Speed); }
 int SocSig_BestOther(void) { return SocSig_Out(Soc_Raw, No_Such_Signal); }
+int SocSig_BestConst(void) { if (Soc_Raw) { return SocSig_Out(5, ESP_Mode); } return SocSig_Out(OFF_VAL, ESP_Mode); }
 int NotMatching(void) { return SocSig_Out(Soc_Unused, ESP_Mode); }
 '''
 
@@ -247,7 +249,7 @@ def test_tx_return_macro_links_signal_function_and_sources(proj, monkeypatch):
         clang_c.set_runtime_config()
     lab = {n["id"]: n["label"] for n in nodes}
     rel = lambda r: {(lab[e["source"]], lab[e["target"]]) for e in edges if e["relation"] == r and e["source"] in lab and e["target"] in lab}
-    assert rel("computed_by") == {("MO_Torque", "SocSig_BestTorque()"), ("ESP_Speed", "SocSig_BestSpeed()")}
+    assert rel("computed_by") == {("MO_Torque", "SocSig_BestTorque()"), ("ESP_Speed", "SocSig_BestSpeed()"), ("ESP_Mode", "SocSig_BestConst()")}
     d = {x for x in rel("derived_from") if x[0] in ("MO_Torque", "ESP_Speed")}
     assert d == {("MO_Torque", "Soc_Raw"), ("MO_Torque", "Soc_Cal"), ("ESP_Speed", "Soc_Raw")}   # local t and the helper are followed
     csv = next(proj.glob("**/can_tx_mapping.csv")).read_text(encoding="utf-8-sig").splitlines()
@@ -286,3 +288,59 @@ def test_tx_in_documentation(proj, monkeypatch):
     assert "## Computed by" in sig and "SocSig_BestTorque" in sig and "SocSig_Out" in sig and "Soc_Raw" in sig
     g = next(g for m in res["can"]["messages"] for g in m["signals"] if g["name"] == "ESP_Speed")
     assert [t["label"] for t in g["tx"]] == ["SocSig_BestSpeed()"] and [l for _v, l in g["tx"][0]["sources"]] == ["Soc_Raw"]
+
+
+def test_tx_constant_value_when_no_variable(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "tx.c").write_text(TX_C)
+    from graphify.extractors import clang_c
+    clang_c.set_runtime_config(extractor="clang", dbc=str(proj / "t.dbc"), dbc_node="*")
+    nodes, edges = [], []
+    try:
+        clang_c.run_clang_pass([proj / "tx.c"], proj, nodes, edges)
+    finally:
+        clang_c.set_runtime_config()
+    e = next(e for e in edges if e["relation"] == "computed_by" and e["source"].endswith("esp_mode") and "bestconst" in e["target"])
+    assert sorted(e["metadata"]["constants"]) == ["16", "5"] and e["metadata"]["lines"]
+    line = next(l for l in next(proj.glob("**/can_tx_mapping.csv")).read_text(encoding="utf-8-sig").splitlines() if l.startswith("ESP_Mode") and "BestConst" in l)
+    assert "5 16" in line or "16 5" in line
+    assert not any(l.split(";")[9] for l in next(proj.glob("**/can_tx_mapping.csv")).read_text(encoding="utf-8-sig").splitlines()[1:] if l.startswith("MO_Torque"))
+
+
+# ---- RX arrays: Sic_Data_CfgSigU8_ci / U16, designated initializers, headers, scan report --------------------
+
+RX_H = """enum { IDX_SIG_N = 0, IDX_SIG_V, IDX_SIG_W };
+extern unsigned char RxU8; extern unsigned short RxU16, RxW;
+const struct { int i; void *p; } Sic_Data_CfgSigU8_ci[] = { { IDX_SIG_N, &RxU8 } };
+"""
+RX_C = """#include "rx.h"
+unsigned char RxU8; unsigned short RxU16, RxW;
+const struct { int idx; int a; } BilSig_Data_CfgSig_ci[] =
+{
+  { IDX_SIG_N, 1 },   // MO_Torque
+  { IDX_SIG_V, 2 },   // ESP_Speed
+  { IDX_SIG_W, 3 }    // ESP_Mode
+};
+void *const Sic_Data_CfgSigU16_ci[] = { [IDX_SIG_V] = (void *)&RxU16, [IDX_SIG_W] = &RxW };
+"""
+
+
+def test_rx_arrays_u8_u16_designated_and_header(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "rx.h").write_text(RX_H)
+    (proj / "sok.c").write_text(RX_C)
+    nodes, edges = _run_sok(proj)
+    assert _links(nodes, edges) == {("MO_Torque", "RxU8"), ("ESP_Speed", "RxU16"), ("ESP_Mode", "RxW")}
+    scan = json.loads(next(proj.glob("**/can_scan.json")).read_text(encoding="utf-8"))
+    assert {a["array"] for a in scan["arrays"]} == {"Sic_Data_CfgSigU8_ci", "Sic_Data_CfgSigU16_ci"}
+    assert {n["name"] for n in scan["not_found"]} >= {"SokSig_Data_CfgSig_ci", "Sic_Data_CfgSokSigU8_ci"}
+
+
+def test_scan_report_names_skipped_rows(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "sok.h").write_text(SOK_H)
+    (proj / "sok.c").write_text(SOK_C.replace("{ SOK_N_MOT, &SokVal_Torque },", "{ SOK_N_MOT },").replace("{ SOK_MODE,  &SokVal_Mode },", "{ SOK_MODE,  3 },"))
+    _run_sok(proj)
+    scan = json.loads(next(proj.glob("**/can_scan.json")).read_text(encoding="utf-8"))
+    sk = [x["why"] for a in scan["arrays"] if a["role"] == "sok_map" for x in a["skipped"]]
+    assert any("expected" in w for w in sk) and any("not the address of a variable" in w for w in sk)

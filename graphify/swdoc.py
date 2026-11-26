@@ -1015,7 +1015,8 @@ def can_data(M: "_Model") -> dict | None:
                     srcs = sorted((x["target"] for x in M.out[sid] if x.get("relation") == "derived_from" and M.t(x["target"]) == "variable"
                                    and e["target"] in ((x.get("metadata") or {}).get("functions") or [])), key=lambda x: M.label(x).lower())
                     txf.append({"fn": e["target"], "label": M.label(e["target"]), "macro": em.get("macro") or "", "line": em.get("line"),
-                                "file": em.get("file") or "", "sources": [(v, M.label(v)) for v in srcs]})
+                                "file": em.get("file") or "", "constants": list(em.get("constants") or []),
+                                "sources": [(v, M.label(v)) for v in srcs]})
             sigs.append({"name": M.label(sid), "vars": [(v, M.label(v)) for v in cv], "links": lk, "tx": txf, "desc": str(M.nodes[sid].get("rationale") or ""),
                          "start": sm.get("start_bit"), "len": sm.get("length"), "order": order,
                          "signed": bool(sm.get("signed")), "factor": sm.get("factor"), "offset": sm.get("offset"),
@@ -1089,9 +1090,10 @@ def can_signal_note(d: dict, m: dict, g: dict, mstem: str, var_stems: dict | Non
     if g.get("tx"):
         vs = var_stems or {}
         out += ["## Computed by (the function returns the value of this signal)", ""] + _table(
-            ["Function", "Macro", "At", "Variables the value comes from"],
+            ["Function", "Macro", "At", "Variables the value comes from", "Constant value"],
             [[_raw(f"[[{vs[t['fn']]}]]" if t["fn"] in vs else f"`{t['label']}`"), f"`{t['macro']}`", f"{t['file']}:{t['line']}",
-              _raw(", ".join(f"[[{vs[v]}]]" if v in vs else f"`{lab}`" for v, lab in t["sources"]) or "-")] for t in g["tx"]])
+              _raw(", ".join(f"[[{vs[v]}]]" if v in vs else f"`{lab}`" for v, lab in t["sources"]) or "-"),
+              ", ".join(f"`{x}`" for x in t.get("constants", [])) or "-"] for t in g["tx"]])
     out += ["## C variable (where the CAN value is stored)", ""]
     if not g.get("links") and not g.get("tx"):
         out += ["*Not linked to a variable (no row in the signal configuration table, or no getter call found).*", ""]
