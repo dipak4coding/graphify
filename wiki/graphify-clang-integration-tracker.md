@@ -723,3 +723,9 @@ Limits: not measured on real kku module; function running several times counts a
 | Sok mismatch | Real data was not available, so no certain cause. Found and fixed: designated initializers `[ENUM] = &var` were skipped without a message; arrays in headers were not scanned. New `graphify-out/can_scan.json` + stderr lines: per array the file, row count, sample, skipped rows with the reason; configured names that were not found at all |
 | Config | `can_maps` / `--can-maps`; globs also for `can_sok_table`, `can_sok_map` |
 | Tests | `tests/test_can_map.py` 12 -> 16 |
+
+## 65. SokSig table: name comment behind the element
+
+- Real table shape (user sample `Signal_Config_Table`): `{ PTR_MSG_DATA(..), 7, 5, 3, UNSIGNED }, // Signal_A`, with header comments and `// ### Message_A ###` in front of the first element. The front-comment rule (§62) would have named element 0 "### Message_A ###" and left the others empty.
+- `can_sok_comment`: `auto` (default) / `before` / `after` (`--can-sok-comment`). Auto = "after" when at least half of the elements have a comment behind them on the same line (`//` or `/* */`), else "before". In "after" style, comments in front are ignored (headers). Chosen style is in `can_scan.json` (`comment_style`).
+- Tests +2 (17 in `test_can_map.py`). Unverified on the real table.

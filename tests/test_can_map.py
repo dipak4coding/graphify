@@ -344,3 +344,59 @@ def test_scan_report_names_skipped_rows(proj, monkeypatch):
     scan = json.loads(next(proj.glob("**/can_scan.json")).read_text(encoding="utf-8"))
     sk = [x["why"] for a in scan["arrays"] if a["role"] == "sok_map" for x in a["skipped"]]
     assert any("expected" in w for w in sk) and any("not the address of a variable" in w for w in sk)
+
+
+SOK_AFTER_C = """#include "sok.h"
+typedef struct { void *p; int byte; int bit; int n; int sg; } SokCfg2_t;
+#define PTR_MSG_DATA(m) ((void *)(m))
+#define UNSIGNED 0
+static const SokCfg2_t SokSig_Data_CfgSig_ci[4] =
+{
+  // Pointer to message data                  Start      Start     Number   Signed
+  //                                          byte       bit       of bits
+
+  // ### Message_A ###
+  {
+    PTR_MSG_DATA(1),
+    7,
+    5,
+    3,
+    UNSIGNED
+  }, // MO_Torque
+
+  {
+    PTR_MSG_DATA(1),
+    8,
+    0,
+    4,
+    UNSIGNED
+  }, // ESP_Speed
+  { PTR_MSG_DATA(2), 1, 2, 3, UNSIGNED }, /* ESP_Mode */
+};
+unsigned short SokVal_Torque, SokVal_Speed;
+unsigned char SokVal_Mode;
+const struct { int e; void *p; } Sic_Data_CfgSokSigU8_ci[] =
+{
+  { SOK_N_MOT, &SokVal_Torque },
+  { SOK_V_FZG, &SokVal_Speed },
+  { SOK_MODE,  &SokVal_Mode },
+};
+"""
+
+
+def test_soksig_comment_behind_the_element_and_header_comments(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "sok.h").write_text(SOK_H)
+    (proj / "sok.c").write_text(SOK_AFTER_C)
+    nodes, edges = _run_sok(proj)
+    assert _links(nodes, edges) == {("MO_Torque", "SokVal_Torque"), ("ESP_Speed", "SokVal_Speed"), ("ESP_Mode", "SokVal_Mode")}
+    scan = json.loads(next(proj.glob("**/can_scan.json")).read_text(encoding="utf-8"))
+    assert next(a for a in scan["arrays"] if a["role"] == "sok_table")["comment_style"] == "after"
+
+
+def test_soksig_comment_style_can_be_forced(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "sok.h").write_text(SOK_H)
+    (proj / "sok.c").write_text(SOK_C)
+    assert len(_links(*_run_sok(proj, can_sok_comment="before"))) == 3
+    assert _links(*_run_sok(proj, can_sok_comment="after")) == set()

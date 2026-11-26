@@ -77,6 +77,7 @@ class ClangConfig:
     can_tx_functions: str = "SocSig_Best*"    # glob(s), comma separated: functions that end in `return MACRO(value, <dbc signal name>)`
     can_maps: str = "Sic_Data_CfgSigU8_ci,Sic_Data_CfgSigU16_ci"   # glob(s): arrays of rows {<signal index>, &<variable>} for the can_table signals
     can_sok_table: str = "SokSig_Data_CfgSig_ci"   # array whose elements are numbered 0,1,2.. ; the comment in FRONT of an element = CAN signal name (values ignored)
+    can_sok_comment: str = "auto"                  # where the name comment of a can_sok_table element is: "before", "after" (same line, behind the element) or "auto"
     can_sok_map: str = "Sic_Data_CfgSokSigU8_ci"   # array of rows {<enum = element number>, &<variable>}
     dbc: str | None = None  # path to the CAN matrix (.dbc); adds can_message / can_signal nodes
     par: str | None = None  # path to a .par parameter-value file (optional; needs a2l for the coverage report)
@@ -114,7 +115,7 @@ def set_runtime_config(**kwargs) -> None:
 
 def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
     cfg = ClangConfig(base_dir=str(base_dir))
-    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_tx_functions", "can_maps", "par", "par_name", "debug", "header_declarations", "parse_comments", "data_flow"):
+    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_sok_comment", "can_tx_functions", "can_maps", "par", "par_name", "debug", "header_declarations", "parse_comments", "data_flow"):
         if key in data:
             setattr(cfg, key, data[key])
     if "extractor" in data:
@@ -140,7 +141,7 @@ def _override() -> dict:
 
 def _apply_override(cfg: ClangConfig, ov: dict) -> ClangConfig:
     """CLI/env wins over the config file; absolute paths from the CLI need no base_dir."""
-    for key in ("compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_tx_functions", "can_maps", "par", "par_name", "extractor", "debug"):
+    for key in ("compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_sok_comment", "can_tx_functions", "can_maps", "par", "par_name", "extractor", "debug"):
         if key in ov:
             setattr(cfg, key, ov[key])
     if "enabled" in ov:
@@ -985,6 +986,16 @@ class ClangExtractor:
         a, b = found[-1]
         return (a or b).split("//")[0].strip(" \t\r\n*/")
 
+    @staticmethod
+    def _after_comment(text: str, end: int) -> str:
+        """Comment behind an element on the same line: `}, // Signal_A` or `}, /* Signal_A */`."""
+        nl = text.find("\n", end)
+        rest = text[end:nl if nl >= 0 else len(text)]
+        m = re.search(r"//(.*)$|/\*(.*?)\*/", rest)
+        if not m:
+            return ""
+        return (m.group(1) if m.group(1) is not None else m.group(2)).split("//")[0].strip(" \t\r*/")
+
     def _can_array(self, decl, sfile: str, role: str) -> None:
         """``sok_table`` (SokSig_Data_CfgSig_ci): element k (0, 1, 2, ...) is named by the comment in front of it, values are
         ignored. ``sok_map`` (Sic_Data_CfgSokSigU8_ci) and ``sig_map`` (Sic_Data_CfgSigU8_ci / U16): rows
@@ -1000,16 +1011,24 @@ class ClangExtractor:
         if role == "sok_table":
             text = Path(sfile).read_text(encoding="latin-1", errors="replace")
             prev = init.extent.start.offset + 1
-            for k, el in enumerate(kids):
+            front, after = [], []
+            for el in kids:
                 a, z = el.extent.start.offset, el.extent.end.offset
-                name = self._front_comment(text[prev:a]) if a >= prev else ""
+                front.append(self._front_comment(text[prev:a]) if a >= prev else "")
+                after.append(self._after_comment(text, z))
+                prev = z
+            style = str(self.cfg.can_sok_comment or "auto").lower()
+            if style not in ("before", "after"):
+                style = "after" if kids and sum(1 for x in after if x) * 2 >= len(kids) else "before"
+            info["comment_style"] = style
+            for k, el in enumerate(kids):
+                name = after[k] if style == "after" else front[k]
                 self.can_rows.append({"index": k, "first": "", "name": name, "file": self.sf(sfile),
                                       "line": el.extent.start.line, "src": "sok"})
                 if not name:
-                    info["skipped"].append({"line": el.extent.start.line, "why": f"element {k}: no comment in front of it"})
+                    info["skipped"].append({"line": el.extent.start.line, "why": f"element {k}: no comment {style} it"})
                 elif len(info["sample"]) < 4:
                     info["sample"].append(f"{k}: {name}")
-                prev = z
             info["rows"] = len(kids)
             return
         src = "sok" if role == "sok_map" else ""
