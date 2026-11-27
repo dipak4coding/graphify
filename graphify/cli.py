@@ -1104,7 +1104,7 @@ def _consume_clang_flags() -> None:
                 sys.exit(2)
             opts[value_flags[name]] = str(Path(val).resolve())
             opts["enabled"] = True
-        elif name in ("--dbc-node", "--can-table", "--can-reader", "--can-sok-table", "--can-sok-map", "--can-sok-comment", "--can-tx-functions"):
+        elif name in ("--dbc-node", "--can-table", "--can-reader", "--can-sok-table", "--can-sok-map", "--can-sok-comment", "--can-sok-offset", "--can-tx-functions"):
             key = name[2:].replace("-", "_")
             if eq:
                 opts[key] = inline

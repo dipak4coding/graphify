@@ -448,3 +448,24 @@ def test_soksig_table_is_read_from_text_when_clang_cannot_parse(proj, monkeypatc
     scan = json.loads(next(proj.glob("**/can_scan.json")).read_text(encoding="utf-8"))
     t = next(a for a in scan["arrays"] if a["role"] == "sok_table")
     assert t["from_text"] and "NOT evaluated" in t["warning"] and t["clang_errors"] and t["comment_style"] == "after"
+
+
+def test_soksig_enum_starting_at_one_is_position_plus_one(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "sok.h").write_text("enum { SOK_NONE = 0, SOK_N_MOT = 1, SOK_V_FZG, SOK_MODE };\n")
+    body = SOK_AFTER_C.replace("{ SOK_N_MOT, &SokVal_Torque },", "{ SOK_N_MOT, &SokVal_Torque },")
+    (proj / "sok.c").write_text(body)
+    nodes, edges = _run_sok(proj)
+    assert _links(nodes, edges) == {("MO_Torque", "SokVal_Torque"), ("ESP_Speed", "SokVal_Speed"), ("ESP_Mode", "SokVal_Mode")}
+    scan = json.loads(next(proj.glob("**/can_scan.json")).read_text(encoding="utf-8"))
+    assert scan["sok_enum_offset"]["value"] == 1
+    # forcing 0 reproduces the one-line shift: element 1 gets the variable of enum 1
+    assert _links(*_run_sok(proj, can_sok_offset="0")) == {("ESP_Speed", "SokVal_Torque"), ("ESP_Mode", "SokVal_Speed")}
+
+
+def test_soksig_enum_from_zero_has_no_offset(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "sok.h").write_text(SOK_H)
+    (proj / "sok.c").write_text(SOK_AFTER_C)
+    _run_sok(proj)
+    assert json.loads(next(proj.glob("**/can_scan.json")).read_text(encoding="utf-8"))["sok_enum_offset"]["value"] == 0

@@ -77,6 +77,7 @@ class ClangConfig:
     can_tx_functions: str = "SocSig_Best*"    # glob(s), comma separated: functions that end in `return MACRO(value, <dbc signal name>)`
     can_maps: str = "Sic_Data_CfgSigU8_ci,Sic_Data_CfgSigU16_ci"   # glob(s): arrays of rows {<signal index>, &<variable>} for the can_table signals
     can_sok_table: str = "SokSig_Data_CfgSig_ci"   # array whose elements are numbered 0,1,2.. ; the comment in FRONT of an element = CAN signal name (values ignored)
+    can_sok_offset: str = "auto"                   # enum value = position + offset: "auto" (1 when the map has no enum 0 and starts at 1), or a number
     can_sok_comment: str = "auto"                  # where the name comment of a can_sok_table element is: "before", "after" (same line, behind the element) or "auto"
     can_sok_map: str = "Sic_Data_CfgSokSigU8_ci"   # array of rows {<enum = element number>, &<variable>}
     dbc: str | None = None  # path to the CAN matrix (.dbc); adds can_message / can_signal nodes
@@ -115,7 +116,7 @@ def set_runtime_config(**kwargs) -> None:
 
 def _config_from_dict(data: dict, base_dir: Path) -> ClangConfig:
     cfg = ClangConfig(base_dir=str(base_dir))
-    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_sok_comment", "can_tx_functions", "can_maps", "par", "par_name", "debug", "header_declarations", "parse_comments", "data_flow"):
+    for key in ("enabled", "compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_sok_comment", "can_sok_offset", "can_tx_functions", "can_maps", "par", "par_name", "debug", "header_declarations", "parse_comments", "data_flow"):
         if key in data:
             setattr(cfg, key, data[key])
     if "extractor" in data:
@@ -141,7 +142,7 @@ def _override() -> dict:
 
 def _apply_override(cfg: ClangConfig, ov: dict) -> ClangConfig:
     """CLI/env wins over the config file; absolute paths from the CLI need no base_dir."""
-    for key in ("compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_sok_comment", "can_tx_functions", "can_maps", "par", "par_name", "extractor", "debug"):
+    for key in ("compile_commands", "libclang", "a2l", "dbc", "dbc_node", "can_table", "can_reader", "can_sok_table", "can_sok_map", "can_sok_comment", "can_sok_offset", "can_tx_functions", "can_maps", "par", "par_name", "extractor", "debug"):
         if key in ov:
             setattr(cfg, key, ov[key])
     if "enabled" in ov:
@@ -2392,6 +2393,30 @@ def _write_report(root: Path, cfg: ClangConfig, ex, stats: dict, c_files: list) 
         return None
 
 
+def _apply_sok_offset(ex, cfg) -> None:
+    """The enum of Sic_Data_CfgSokSigU8_ci is the element number of SokSig_Data_CfgSig_ci. Usually it equals the position
+    (0, 1, 2 ...); when the enum starts at 1 (0 = "no signal") it is position + 1. auto: offset 1 when the map has no enum 0
+    and its smallest enum is 1."""
+    mode = str(cfg.can_sok_offset if cfg.can_sok_offset is not None else "auto").strip().lower()
+    enums = sorted({c["index"] for c in ex.can_calls if c.get("src") == "sok" and c.get("index") is not None})
+    if not enums:
+        ex.sok_offset = {"value": 0, "mode": mode, "reason": "no sok map rows"}
+        return
+    if re.match(r"^-?[0-9]+$", mode):
+        off, why = int(mode), "from config"
+    elif enums[0] == 1:
+        off, why = 1, f"enum values start at 1 (no enum 0, smallest = 1, largest = {enums[-1]}): element number = enum - 1"
+    else:
+        off, why = 0, f"smallest enum = {enums[0]}, largest = {enums[-1]}"
+    for r in ex.can_rows:
+        if r.get("src") == "sok":
+            r["position"] = r["index"]
+            r["index"] = r["index"] + off
+    ex.sok_offset = {"value": off, "mode": mode, "reason": why}
+    if off:
+        print(f"[graphify] CAN scan: SokSig enum = position + {off} ({why})", file=sys.stderr)
+
+
 def _can_scan_report(ex, cfg, root) -> None:
     """Says which of the configured CAN arrays / functions were found, how many rows, and which rows were skipped and why
     (graphify-out/can_scan.json + a few lines on stderr). This is the first place to look when a mapping is missing."""
@@ -2401,7 +2426,7 @@ def _can_scan_report(ex, cfg, root) -> None:
     rows = {}
     for r in ex.can_rows:
         rows[r.get("src", "")] = rows.get(r.get("src", ""), 0) + 1
-    report = {"arrays": ex.can_scan, "table_rows": {"bilsig": rows.get("", 0), "sok": rows.get("sok", 0)},
+    report = {"sok_enum_offset": getattr(ex, "sok_offset", None), "arrays": ex.can_scan, "table_rows": {"bilsig": rows.get("", 0), "sok": rows.get("sok", 0)},
               "map_rows": {"bilsig": sum(1 for c in ex.can_calls if not c.get("src")), "sok": sum(1 for c in ex.can_calls if c.get("src") == "sok")},
               "not_found": []}
     if not rows.get("", 0):
@@ -2552,6 +2577,7 @@ def run_clang_pass(paths, root, all_nodes: list, all_edges: list):
                 try:
                     from graphify.can_map import join_can, write_outputs
                     from graphify.paths import out_path
+                    _apply_sok_offset(ex, cfg)
                     res = join_can(all_nodes, all_edges, ex.can_rows, ex.can_calls)
                     outp = out_path()
                     outp = outp if outp.is_absolute() else root / outp

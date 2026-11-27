@@ -735,3 +735,9 @@ Limits: not measured on real kku module; function running several times counts a
 - User's real table (`T_SOKSIG_DATA_CFGSIG SokSig_Data_CfgSig_ci[SOK_ANZ_RX_SIGNALE]`): one element per line, name behind it, header comments and `// ### MSG ###` in front, `#if (VARIANT != ...)` around elements. Works in the AST path; positions follow the compiled variant (an `#if`-disabled element has no position; the enum must follow the same variant).
 - If clang cannot parse the file (include path, unknown type or macro) the VAR_DECL has no initializer and the table was silently missing. Now `_can_sok_text_fallback` reads the table from the source text (top-level elements by brace depth, comments and strings skipped); `#if`/`#else` are NOT evaluated there (all elements counted). `can_scan.json` marks `from_text`, the `warning` and the first clang errors; stderr prints them. The map array has no text fallback (the enum values need clang).
 - Tests +2 (19 in `test_can_map.py`).
+
+## 67. SokSig enum offset (one-line shift on real data)
+
+- Symptom (user): first table line ignored, second line mapped to the first C variable. Cause: the enum of `Sic_Data_CfgSokSigU8_ci` starts at 1 (0 = no signal), so element number = enum - 1.
+- `can_sok_offset` (`auto` default, or a number; `--can-sok-offset`): `auto` takes offset 1 when the map has no enum 0 and its smallest enum is 1, else 0. Applied before the join (`_apply_sok_offset`); row `position` kept; value, mode and reason in `can_scan.json` (`sok_enum_offset`) and on stderr.
+- Tests +2 (21 in `test_can_map.py`). Open: an enum that starts at 1 but whose table really has an extra leading dummy element is not distinguishable; set the number by hand then.
