@@ -905,6 +905,9 @@ class ClangExtractor:
                                           "line": row.extent.start.line})
             elif top.kind == K.FUNCTION_DECL and top.spelling == reader and top.is_definition():
                 self._can_getters(top, sfile)
+        plain = [p.strip() for p in str(cfg.can_sok_table or "").split(",") if p.strip() and not re.search(r"[*?\[]", p)]
+        if plain:
+            self._can_sok_text_fallback(tu, sfile, plain)
 
     def _can_tx_scan(self, fn, func_id, sfile: str) -> None:
         """`return MACRO(value, can_label);` in a function matching can_tx_functions. The macro drops its 2nd argument, so
@@ -986,6 +989,121 @@ class ClangExtractor:
         a, b = found[-1]
         return (a or b).split("//")[0].strip(" \t\r\n*/")
 
+    def _sok_rows(self, info: dict, text: str, els: list, prev: int, sfile: str) -> None:
+        """Name every element of the SokSig table: element k (0, 1, 2 ...) gets the comment behind it (or in front of it)."""
+        front, after = [], []
+        for a, z, _ln in els:
+            front.append(self._front_comment(text[prev:a]) if a >= prev else "")
+            after.append(self._after_comment(text, z))
+            prev = z
+        style = str(self.cfg.can_sok_comment or "auto").lower()
+        if style not in ("before", "after"):
+            style = "after" if els and sum(1 for x in after if x) * 2 >= len(els) else "before"
+        info["comment_style"] = style
+        for k, (_a, _z, ln) in enumerate(els):
+            name = after[k] if style == "after" else front[k]
+            self.can_rows.append({"index": k, "first": "", "name": name, "file": self.sf(sfile), "line": ln, "src": "sok"})
+            if not name:
+                info["skipped"].append({"line": ln, "why": f"element {k}: no comment {style} it"})
+            elif len(info["sample"]) < 4:
+                info["sample"].append(f"{k}: {name}")
+        info["rows"] = len(els)
+
+    @staticmethod
+    def _text_elements(text: str, name: str):
+        """Fallback when clang cannot parse the file: top-level elements of `name[...] = { ... };` from the source text.
+        Returns (open offset, [(start, end, line)], saw_preprocessor_lines) or None. #if / #else are NOT evaluated."""
+        m = re.search(r"\b" + re.escape(name) + r"\s*(\[[^\]]*\])*\s*=", text)
+        if not m:
+            return None
+        i = text.find("{", m.end())
+        if i < 0:
+            return None
+        els, depth, n, start, pp = [], 0, len(text), None, False
+        open_off, line_start = i, True
+        j = i
+        while j < n:
+            c = text[j]
+            if c == "\n":
+                line_start = True
+                j += 1
+                continue
+            if line_start and c in " \t":
+                j += 1
+                continue
+            if line_start and c == "#":                  # preprocessor line (with continuation lines)
+                pp = True
+                while j < n and text[j] != "\n":
+                    if text[j] == "\\" and j + 1 < n and text[j + 1] == "\n":
+                        j += 1
+                    j += 1
+                continue
+            line_start = False
+            if text.startswith("//", j):
+                j = text.find("\n", j)
+                j = n if j < 0 else j
+                continue
+            if text.startswith("/*", j):
+                k = text.find("*/", j + 2)
+                j = n if k < 0 else k + 2
+                continue
+            if c in "\"'":
+                q = c
+                j += 1
+                while j < n and text[j] != q:
+                    j += 2 if text[j] == "\\" else 1
+                j += 1
+                continue
+            if c in "{([":
+                depth += 1
+                if depth == 2 and start is None:
+                    start = j
+                j += 1
+                continue
+            if c in "})]":
+                depth -= 1
+                if depth == 1 and start is not None and c == "}":
+                    els.append((start, j + 1, text.count("\n", 0, start) + 1))
+                    start = None
+                if depth == 0:
+                    break
+                j += 1
+                continue
+            if depth == 1 and c not in " \t\r," and start is None:      # plain element (no braces)
+                k = j
+                d = 0
+                while k < n and not (d == 0 and text[k] in ",}"):
+                    d += text[k] in "([" ; d -= text[k] in ")]"
+                    k += 1
+                els.append((j, k, text.count("\n", 0, j) + 1))
+                j = k
+                continue
+            j += 1
+        return open_off + 1, els, pp
+
+    def _can_sok_text_fallback(self, tu, sfile: str, names: list) -> None:
+        """The table is in this file but clang did not give an initializer list for it (parse errors: missing include path,
+        unknown type or macro). Read it from the text and say why."""
+        try:
+            text = Path(sfile).read_text(encoding="latin-1", errors="replace")
+        except OSError:
+            return
+        errs = [f"{d.location.file}:{d.location.line}: {d.spelling}" for d in tu.diagnostics if d.severity >= 3][:4]
+        for nm in names:
+            if (nm, str(sfile)) in self._can_done or not re.search(r"\b" + re.escape(nm) + r"\s*\[", text):
+                continue
+            got = self._text_elements(text, nm)
+            if not got:
+                continue
+            open_off, els, pp = got
+            self._can_done.add((nm, str(sfile)))
+            info = {"array": nm, "role": "sok_table", "file": self.sf(sfile), "line": text.count("\n", 0, open_off) + 1, "rows": 0,
+                    "sample": [], "skipped": [], "from_text": True, "clang_errors": errs,
+                    "warning": "clang gave no initializer list for this table, it was read from the source text"
+                               + ("; #if / #else lines inside the table are NOT evaluated (all elements counted)" if pp else "")}
+            self.can_scan.append(info)
+            self._sok_rows(info, text, els, open_off, sfile)
+
     @staticmethod
     def _after_comment(text: str, end: int) -> str:
         """Comment behind an element on the same line: `}, // Signal_A` or `}, /* Signal_A */`."""
@@ -1010,26 +1128,8 @@ class ClangExtractor:
         kids = list(init.get_children())
         if role == "sok_table":
             text = Path(sfile).read_text(encoding="latin-1", errors="replace")
-            prev = init.extent.start.offset + 1
-            front, after = [], []
-            for el in kids:
-                a, z = el.extent.start.offset, el.extent.end.offset
-                front.append(self._front_comment(text[prev:a]) if a >= prev else "")
-                after.append(self._after_comment(text, z))
-                prev = z
-            style = str(self.cfg.can_sok_comment or "auto").lower()
-            if style not in ("before", "after"):
-                style = "after" if kids and sum(1 for x in after if x) * 2 >= len(kids) else "before"
-            info["comment_style"] = style
-            for k, el in enumerate(kids):
-                name = after[k] if style == "after" else front[k]
-                self.can_rows.append({"index": k, "first": "", "name": name, "file": self.sf(sfile),
-                                      "line": el.extent.start.line, "src": "sok"})
-                if not name:
-                    info["skipped"].append({"line": el.extent.start.line, "why": f"element {k}: no comment {style} it"})
-                elif len(info["sample"]) < 4:
-                    info["sample"].append(f"{k}: {name}")
-            info["rows"] = len(kids)
+            els = [(el.extent.start.offset, el.extent.end.offset, el.extent.start.line) for el in kids]
+            self._sok_rows(info, text, els, init.extent.start.offset + 1, sfile)
             return
         src = "sok" if role == "sok_map" else ""
         pairs = []                       # (index cursor, address cursor, line)
@@ -2318,6 +2418,10 @@ def _can_scan_report(ex, cfg, root) -> None:
         sk = len(i["skipped"])
         print(f"[graphify] CAN scan: {i['array']} ({i['role']}) {i['file']}:{i['line']} -> {i['rows']} row(s)"
               + (f", {sk} skipped (see can_scan.json)" if sk else ""), file=sys.stderr)
+        if i.get("warning"):
+            print(f"[graphify] CAN scan: WARNING {i['array']}: {i['warning']}", file=sys.stderr)
+            for er in i.get("clang_errors", [])[:2]:
+                print(f"[graphify] CAN scan:   clang: {er}", file=sys.stderr)
     for nf in report["not_found"]:
         print(f"[graphify] CAN scan: {nf['config']} '{nf['name']}' not found in any parsed C file or included header", file=sys.stderr)
 

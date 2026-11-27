@@ -400,3 +400,51 @@ def test_soksig_comment_style_can_be_forced(proj, monkeypatch):
     (proj / "sok.c").write_text(SOK_C)
     assert len(_links(*_run_sok(proj, can_sok_comment="before"))) == 3
     assert _links(*_run_sok(proj, can_sok_comment="after")) == set()
+
+
+REAL_HEAD = """#define SOK_PTR_DATA_MSG(m) ((void *)(m))
+#define SOK_IDX_RX_MSG_DUMMY_01 1
+#define UNSIGNED 0
+#define DUMMY_VARIANT_02 2
+typedef struct { void *p; int byte; int bit; int n; int sg; } T_SOKSIG_DATA_CFGSIG;
+#define SOK_ANZ_RX_SIGNALE 3
+"""
+REAL_BODY = """static const T_SOKSIG_DATA_CFGSIG SokSig_Data_CfgSig_ci[SOK_ANZ_RX_SIGNALE] = // !!! Dummy - max 32
+{
+  //  Pointer to dummy message data                      Start-     Start-    Number  Signed
+  //                                                    byte       bit       Bits
+
+  // ### DUMMY_MSG_01 ###
+
+  {SOK_PTR_DATA_MSG(SOK_IDX_RX_MSG_DUMMY_01),             7,         5,        3,      UNSIGNED}, // MO_Torque
+  {SOK_PTR_DATA_MSG(SOK_IDX_RX_MSG_DUMMY_01),             8,         0,        4,      UNSIGNED}, // ESP_Speed
+
+  #if (DUMMY_VARIANT != DUMMY_VARIANT_02)
+
+  {SOK_PTR_DATA_MSG(SOK_IDX_RX_MSG_DUMMY_01),             9,         6,        2,      UNSIGNED}, // ESP_Mode
+
+  #endif // DUMMY_VARIANT
+
+}; // SokSig_Data_CfgSig_ci
+unsigned short SokVal_Torque, SokVal_Speed;
+unsigned char SokVal_Mode;
+enum { SOK_N_MOT, SOK_V_FZG, SOK_MODE };
+const struct { int e; void *p; } Sic_Data_CfgSokSigU8_ci[] = { { SOK_N_MOT, &SokVal_Torque }, { SOK_V_FZG, &SokVal_Speed }, { SOK_MODE, &SokVal_Mode } };
+"""
+
+
+def test_soksig_real_layout_with_variant_and_without(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "sok.c").write_text(REAL_HEAD + "#define DUMMY_VARIANT 1\n" + REAL_BODY)
+    assert len(_links(*_run_sok(proj))) == 3
+    (proj / "sok.c").write_text(REAL_HEAD + "#define DUMMY_VARIANT 2\n" + REAL_BODY)
+    assert _links(*_run_sok(proj)) == {("MO_Torque", "SokVal_Torque"), ("ESP_Speed", "SokVal_Speed")}   # element 2 is compiled out
+
+
+def test_soksig_table_is_read_from_text_when_clang_cannot_parse(proj, monkeypatch):
+    monkeypatch.chdir(proj)
+    (proj / "sok.c").write_text(REAL_BODY.replace("static const T_SOKSIG_DATA_CFGSIG", "static const T_UNKNOWN"))
+    assert len(_links(*_run_sok(proj))) == 3
+    scan = json.loads(next(proj.glob("**/can_scan.json")).read_text(encoding="utf-8"))
+    t = next(a for a in scan["arrays"] if a["role"] == "sok_table")
+    assert t["from_text"] and "NOT evaluated" in t["warning"] and t["clang_errors"] and t["comment_style"] == "after"

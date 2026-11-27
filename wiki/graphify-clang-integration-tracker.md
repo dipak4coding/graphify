@@ -729,3 +729,9 @@ Limits: not measured on real kku module; function running several times counts a
 - Real table shape (user sample `Signal_Config_Table`): `{ PTR_MSG_DATA(..), 7, 5, 3, UNSIGNED }, // Signal_A`, with header comments and `// ### Message_A ###` in front of the first element. The front-comment rule (§62) would have named element 0 "### Message_A ###" and left the others empty.
 - `can_sok_comment`: `auto` (default) / `before` / `after` (`--can-sok-comment`). Auto = "after" when at least half of the elements have a comment behind them on the same line (`//` or `/* */`), else "before". In "after" style, comments in front are ignored (headers). Chosen style is in `can_scan.json` (`comment_style`).
 - Tests +2 (17 in `test_can_map.py`). Unverified on the real table.
+
+## 66. SokSig table: real layout, `#if` variants, parse errors
+
+- User's real table (`T_SOKSIG_DATA_CFGSIG SokSig_Data_CfgSig_ci[SOK_ANZ_RX_SIGNALE]`): one element per line, name behind it, header comments and `// ### MSG ###` in front, `#if (VARIANT != ...)` around elements. Works in the AST path; positions follow the compiled variant (an `#if`-disabled element has no position; the enum must follow the same variant).
+- If clang cannot parse the file (include path, unknown type or macro) the VAR_DECL has no initializer and the table was silently missing. Now `_can_sok_text_fallback` reads the table from the source text (top-level elements by brace depth, comments and strings skipped); `#if`/`#else` are NOT evaluated there (all elements counted). `can_scan.json` marks `from_text`, the `warning` and the first clang errors; stderr prints them. The map array has no text fallback (the enum values need clang).
+- Tests +2 (19 in `test_can_map.py`).
