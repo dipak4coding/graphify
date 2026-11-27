@@ -1086,7 +1086,7 @@ class ClangExtractor:
         """The table is in this file but clang did not give an initializer list for it (parse errors: missing include path,
         unknown type or macro). Read it from the text and say why."""
         try:
-            text = Path(sfile).read_text(encoding="latin-1", errors="replace")
+            text = Path(sfile).read_bytes().decode("latin-1")
         except OSError:
             return
         errs = [f"{d.location.file}:{d.location.line}: {d.spelling}" for d in tu.diagnostics if d.severity >= 3][:4]
@@ -1128,7 +1128,7 @@ class ClangExtractor:
             return
         kids = list(init.get_children())
         if role == "sok_table":
-            text = Path(sfile).read_text(encoding="latin-1", errors="replace")
+            text = Path(sfile).read_bytes().decode("latin-1")
             els = [(el.extent.start.offset, el.extent.end.offset, el.extent.start.line) for el in kids]
             self._sok_rows(info, text, els, init.extent.start.offset + 1, sfile)
             return

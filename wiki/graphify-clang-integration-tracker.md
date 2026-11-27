@@ -741,3 +741,10 @@ Limits: not measured on real kku module; function running several times counts a
 - Symptom (user): first table line ignored, second line mapped to the first C variable. Cause: the enum of `Sic_Data_CfgSokSigU8_ci` starts at 1 (0 = no signal), so element number = enum - 1.
 - `can_sok_offset` (`auto` default, or a number; `--can-sok-offset`): `auto` takes offset 1 when the map has no enum 0 and its smallest enum is 1, else 0. Applied before the join (`_apply_sok_offset`); row `position` kept; value, mode and reason in `can_scan.json` (`sok_enum_offset`) and on stderr.
 - Tests +2 (21 in `test_can_map.py`). Open: an enum that starts at 1 but whose table really has an extra leading dummy element is not distinguishable; set the number by hand then.
+
+## 68. SokSig one-line shift: real cause was CRLF (corrects §67)
+
+- User's map shows enum values `0, 1, ...` (start at 0), so the enum offset of §67 was not the cause (auto -> 0 here; the option stays for maps that start at 1).
+- Cause: the table names are found by clang byte offsets (`extent.end.offset`), but the file was read with `Path.read_text`, which turns CRLF into LF. Every line before the element moved the offset by one character, so the comment search landed on the next line: element k got the comment of element k+1 ("mapped one line down"). Worse further down the file.
+- Fix: `read_bytes().decode("latin-1")` (no newline translation, one character per byte) in `_can_array` and the text fallback. Test with a CRLF file (reproduced before the fix: `ESP_Speed -> SokVal_Torque`).
+- Tests: 22 in `test_can_map.py`.

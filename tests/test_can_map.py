@@ -469,3 +469,13 @@ def test_soksig_enum_from_zero_has_no_offset(proj, monkeypatch):
     (proj / "sok.c").write_text(SOK_AFTER_C)
     _run_sok(proj)
     assert json.loads(next(proj.glob("**/can_scan.json")).read_text(encoding="utf-8"))["sok_enum_offset"]["value"] == 0
+
+
+def test_soksig_table_with_windows_line_endings(proj, monkeypatch):
+    """CRLF files: clang offsets are bytes of the file, so the file must be read without newline translation."""
+    monkeypatch.chdir(proj)
+    (proj / "sok.h").write_text(SOK_H)
+    body = REAL_HEAD + "#define DUMMY_VARIANT 1\n" + REAL_BODY
+    body = "// header line\n" * 25 + body.replace("(Sic_Data", "(Sic_Data")
+    (proj / "sok.c").write_bytes(body.replace("\n", "\r\n").encode("latin-1"))
+    assert _links(*_run_sok(proj)) == {("MO_Torque", "SokVal_Torque"), ("ESP_Speed", "SokVal_Speed"), ("ESP_Mode", "SokVal_Mode")}
